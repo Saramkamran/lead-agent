@@ -5,14 +5,16 @@ from sqlalchemy.orm import DeclarativeBase
 
 from app.core.config import settings
 
-# asyncpg requires ssl via connect_args, not via URL params
 _ssl_ctx = ssl.create_default_context()
 _ssl_ctx.check_hostname = False
 _ssl_ctx.verify_mode = ssl.CERT_NONE
 
 engine = create_async_engine(
     settings.DATABASE_URL.replace("?ssl=require", ""),
-    connect_args={"ssl": _ssl_ctx},
+    connect_args={
+        "ssl": _ssl_ctx,
+        "statement_cache_size": 0,  # required for Supabase connection pooler
+    },
     echo=False,
 )
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
