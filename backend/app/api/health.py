@@ -12,5 +12,5 @@ async def health_check(db: AsyncSession = Depends(get_db)):
     try:
         await db.execute(text("SELECT 1"))
         return {"status": "ok", "db": "ok"}
-    except Exception:
-        return {"status": "ok", "db": "error"}
+    except Exception as e:
+        return {"status": "ok", "db": "error", "detail": str(e)[:300]}
