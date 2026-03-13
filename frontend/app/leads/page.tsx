@@ -180,6 +180,7 @@ export default function LeadsPage() {
             <thead>
               <tr className="border-b border-gray-100 bg-gray-50 text-left">
                 <th className="px-4 py-3 font-medium text-gray-600">Name</th>
+                <th className="px-4 py-3 font-medium text-gray-600">Email</th>
                 <th className="px-4 py-3 font-medium text-gray-600">Company</th>
                 <th className="px-4 py-3 font-medium text-gray-600">Title</th>
                 <th className="px-4 py-3 font-medium text-gray-600">Score</th>
@@ -190,9 +191,9 @@ export default function LeadsPage() {
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-400">Loading…</td></tr>
+                <tr><td colSpan={8} className="px-4 py-8 text-center text-gray-400">Loading…</td></tr>
               ) : filteredLeads.length === 0 ? (
-                <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-400">No leads found.</td></tr>
+                <tr><td colSpan={8} className="px-4 py-8 text-center text-gray-400">No leads found.</td></tr>
               ) : (
                 filteredLeads.map((lead) => (
                   <tr
@@ -203,6 +204,7 @@ export default function LeadsPage() {
                     <td className="px-4 py-3 font-medium text-gray-900">
                       {[lead.first_name, lead.last_name].filter(Boolean).join(" ") || lead.email}
                     </td>
+                    <td className="px-4 py-3 text-gray-600">{lead.email}</td>
                     <td className="px-4 py-3 text-gray-600">{lead.company ?? "—"}</td>
                     <td className="px-4 py-3 text-gray-600">{lead.title ?? "—"}</td>
                     <td className="px-4 py-3"><ScoreBadge score={lead.score} /></td>
