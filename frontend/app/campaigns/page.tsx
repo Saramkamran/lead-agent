@@ -1,13 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getCampaigns, createCampaign, updateCampaign, startCampaign, pauseCampaign, Campaign } from "@/lib/api";
+import { getCampaigns, createCampaign, updateCampaign, startCampaign, pauseCampaign, triggerOutreachJob, Campaign } from "@/lib/api";
 import { AppShell } from "@/components/layout/app-shell";
 import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { StatusBadge } from "@/components/ui/badge";
-import { Plus, Play, Pause, Pencil } from "lucide-react";
+import { Plus, Play, Pause, Pencil, Send } from "lucide-react";
 
 const EMPTY_FORM: Partial<Campaign> = {
   name: "",
@@ -28,6 +28,8 @@ export default function CampaignsPage() {
   const [form, setForm] = useState<Partial<Campaign>>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [outreaching, setOutreaching] = useState(false);
+  const [outreachDone, setOutreachDone] = useState(false);
 
   useEffect(() => { fetchCampaigns(); }, []);
 
@@ -86,6 +88,21 @@ export default function CampaignsPage() {
     }
   }
 
+  async function handleSendOutreach() {
+    setOutreaching(true);
+    setOutreachDone(false);
+    try {
+      await triggerOutreachJob();
+      setOutreachDone(true);
+      setTimeout(() => setOutreachDone(false), 4000);
+    } catch (e: unknown) {
+      const msg = e && typeof e === "object" && "error" in e ? String((e as { error: string }).error) : "Outreach failed";
+      alert(msg);
+    } finally {
+      setOutreaching(false);
+    }
+  }
+
   async function toggleCampaign(campaign: Campaign) {
     try {
       if (campaign.status === "active") {
@@ -105,9 +122,18 @@ export default function CampaignsPage() {
       <div className="p-8">
         <div className="flex items-center justify-between mb-6">
           <h1 className="text-2xl font-bold text-gray-900">Campaigns</h1>
-          <Button onClick={openNew}>
-            <Plus size={16} /> New Campaign
-          </Button>
+          <div className="flex items-center gap-2">
+            {outreachDone && (
+              <span className="text-sm text-green-600 font-medium">Outreach sent — leads updated</span>
+            )}
+            <Button variant="secondary" onClick={handleSendOutreach} disabled={outreaching}>
+              <Send size={16} />
+              {outreaching ? "Sending…" : "Send Outreach Now"}
+            </Button>
+            <Button onClick={openNew}>
+              <Plus size={16} /> New Campaign
+            </Button>
+          </div>
         </div>
 
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
