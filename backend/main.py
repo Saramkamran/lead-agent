@@ -6,7 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import auth, campaigns, conversations, health, leads, webhooks
+from app.api import auth, campaigns, conversations, health, jobs, leads, webhooks
 from app.jobs.scheduler import start_scheduler, stop_scheduler
 
 logging.basicConfig(
@@ -68,6 +68,7 @@ def create_app() -> FastAPI:
     app.include_router(campaigns.router)
     app.include_router(webhooks.router)
     app.include_router(conversations.router)
+    app.include_router(jobs.router)
 
     return app
 
