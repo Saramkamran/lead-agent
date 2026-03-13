@@ -1,13 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getLeads, getLead, updateLead, deleteLead, importLeads, Lead, Message, Conversation } from "@/lib/api";
+import { getLeads, getLead, updateLead, deleteLead, importLeads, triggerScoreJob, Lead, Message, Conversation } from "@/lib/api";
 import { AppShell } from "@/components/layout/app-shell";
 import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { ScoreBadge, StatusBadge } from "@/components/ui/badge";
-import { Upload, X, ChevronRight, Trash2 } from "lucide-react";
+import { Upload, X, ChevronRight, Trash2, Zap } from "lucide-react";
 
 const STATUS_OPTIONS = ["", "imported", "scored", "contacted", "replied", "booked", "not_interested", "bounced"];
 
@@ -22,6 +22,9 @@ export default function LeadsPage() {
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [slideOpen, setSlideOpen] = useState(false);
   const [editing, setEditing] = useState<Partial<Lead>>({});
+
+  const [scoring, setScoring] = useState(false);
+  const [scoredCount, setScoredCount] = useState<number | null>(null);
 
   const [importOpen, setImportOpen] = useState(false);
   const [importFile, setImportFile] = useState<File | null>(null);
@@ -114,6 +117,21 @@ export default function LeadsPage() {
     if (file?.name.endsWith(".csv")) setImportFile(file);
   }
 
+  async function handleScoreNow() {
+    setScoring(true);
+    setScoredCount(null);
+    try {
+      await triggerScoreJob();
+      setScoredCount(1);
+      fetchLeads();
+      setTimeout(() => setScoredCount(null), 4000);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setScoring(false);
+    }
+  }
+
   const totalPages = Math.ceil(total / PAGE_SIZE);
 
   return (
@@ -122,9 +140,18 @@ export default function LeadsPage() {
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <h1 className="text-2xl font-bold text-gray-900">Leads</h1>
-          <Button onClick={() => { setImportOpen(true); setImportResult(null); setImportFile(null); }}>
-            <Upload size={16} /> Import CSV
-          </Button>
+          <div className="flex items-center gap-2">
+            {scoredCount !== null && (
+              <span className="text-sm text-green-600 font-medium">Scoring complete — leads updated</span>
+            )}
+            <Button variant="secondary" onClick={handleScoreNow} disabled={scoring}>
+              <Zap size={16} />
+              {scoring ? "Scoring…" : "Score Now"}
+            </Button>
+            <Button onClick={() => { setImportOpen(true); setImportResult(null); setImportFile(null); }}>
+              <Upload size={16} /> Import CSV
+            </Button>
+          </div>
         </div>
 
         {/* Filters */}

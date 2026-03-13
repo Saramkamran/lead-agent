@@ -183,3 +183,7 @@ export const replyToConversation = (id: string, body: string) =>
     method: "POST",
     body: JSON.stringify({ body }),
   });
+
+// ── Jobs ───────────────────────────────────────────────────────────────────────
+export const triggerScoreJob = () =>
+  apiFetch<{ ok: boolean; job: string }>("/jobs/score", { method: "POST" });
