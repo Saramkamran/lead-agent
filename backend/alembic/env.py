@@ -42,7 +42,18 @@ def do_run_migrations(connection):
 
 
 async def run_async_migrations() -> None:
-    engine = create_async_engine(settings.DATABASE_URL)
+    import ssl
+    _ssl_ctx = ssl.create_default_context()
+    _ssl_ctx.check_hostname = False
+    _ssl_ctx.verify_mode = ssl.CERT_NONE
+
+    engine = create_async_engine(
+        settings.DATABASE_URL.replace("?ssl=require", ""),
+        connect_args={
+            "ssl": _ssl_ctx,
+            "statement_cache_size": 0,
+        },
+    )
     async with engine.connect() as connection:
         await connection.run_sync(do_run_migrations)
     await engine.dispose()
