@@ -100,7 +100,7 @@ async def generate_reply(conversation, lead, campaign) -> str:
         ai_reply = response.choices[0].message.content.strip()
     except Exception as e:
         logger.error("Failed to generate reply for conversation %s: %s", conversation.id, e)
-        raise
+        return ""
 
     # Append AI response to thread
     thread.append({

@@ -64,17 +64,21 @@ async def handle_reply(reply_data: dict) -> None:
             fallback_lead = fallback_result.scalar_one_or_none()
             if fallback_lead:
                 lead_id = fallback_lead.id
+                lead = fallback_lead
                 logger.info("[REPLY] Matched lead by from_email fallback: %s", from_email)
             else:
                 logger.info("[REPLY] No matching campaign thread for message from %s — ignoring", from_email)
                 return
+        else:
+            lead = None
 
-        # Step 2: Load lead
-        lead_result = await db.execute(select(Lead).where(Lead.id == lead_id).limit(1))
-        lead = lead_result.scalar_one_or_none()
-        if not lead:
-            logger.warning("[REPLY] Lead %s not found — ignoring", lead_id)
-            return
+        # Step 2: Load lead (skip if already loaded via fallback)
+        if lead is None:
+            lead_result = await db.execute(select(Lead).where(Lead.id == lead_id).limit(1))
+            lead = lead_result.scalar_one_or_none()
+            if not lead:
+                logger.warning("[REPLY] Lead %s not found — ignoring", lead_id)
+                return
 
         # Step 3: Save inbound message to email_logs
         inbound_log = EmailLog(
@@ -153,6 +157,10 @@ async def handle_reply(reply_data: dict) -> None:
 
         # Step 7: Generate AI reply
         ai_reply = await generate_reply(conversation, lead, campaign)
+        if not ai_reply:
+            logger.warning("[REPLY] generate_reply returned empty for lead %s — skipping send", from_email)
+            await db.commit()
+            return
 
         # Step 8: Build threading headers
         # In-Reply-To = the lead's inbound message (the one we're directly replying to)

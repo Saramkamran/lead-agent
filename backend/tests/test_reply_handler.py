@@ -153,8 +153,9 @@ async def test_neutral_also_replies(db):
 
 @pytest.mark.asyncio
 async def test_no_matching_thread_returns_silently(db):
-    """If References/In-Reply-To don't match any outbound email_log, do nothing."""
-    lead = await _make_lead(db, "nomatch@example.com")
+    """If References/In-Reply-To don't match any outbound email_log and the sender
+    is not a contacted/replied lead, do nothing."""
+    lead = await _make_lead(db, "nomatch@example.com", status="imported")
 
     reply_data = {
         "from_email": "nomatch@example.com",
@@ -177,7 +178,7 @@ async def test_no_matching_thread_returns_silently(db):
     classify_mock.assert_not_called()
     # Lead status unchanged
     await db.refresh(lead)
-    assert lead.status == "contacted"
+    assert lead.status == "imported"
 
 
 # ── Thread correlation via References ────────────────────────────────────────
