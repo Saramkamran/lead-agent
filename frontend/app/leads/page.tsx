@@ -1,5 +1,5 @@
 "use client";
-
+// v2
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getLeads, getLead, updateLead, deleteLead, importLeads, triggerScoreJob, Lead, Message, Conversation } from "@/lib/api";
 import { AppShell } from "@/components/layout/app-shell";
