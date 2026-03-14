@@ -54,8 +54,20 @@ async def handle_reply(reply_data: dict) -> None:
                 lead_id = matched_log.lead_id
 
         if not lead_id:
-            logger.info("[REPLY] No matching campaign thread for message from %s — ignoring", from_email)
-            return
+            # Fallback: match by sender email directly.
+            # This handles mail servers that replace Message-ID headers (e.g. cPanel relay).
+            fallback_result = await db.execute(
+                select(Lead)
+                .where(Lead.email == from_email, Lead.status.in_(["contacted", "replied"]))
+                .limit(1)
+            )
+            fallback_lead = fallback_result.scalar_one_or_none()
+            if fallback_lead:
+                lead_id = fallback_lead.id
+                logger.info("[REPLY] Matched lead by from_email fallback: %s", from_email)
+            else:
+                logger.info("[REPLY] No matching campaign thread for message from %s — ignoring", from_email)
+                return
 
         # Step 2: Load lead
         lead_result = await db.execute(select(Lead).where(Lead.id == lead_id).limit(1))
