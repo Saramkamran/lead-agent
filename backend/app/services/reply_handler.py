@@ -142,22 +142,22 @@ async def handle_reply(reply_data: dict) -> None:
         # Step 7: Generate AI reply
         ai_reply = await generate_reply(conversation, lead, campaign)
 
-        # Step 8: Build threading headers from most recent outbound log
-        recent_log_result = await db.execute(
-            select(EmailLog)
-            .where(EmailLog.lead_id == lead.id, EmailLog.direction == "outbound")
-            .order_by(EmailLog.created_at.desc())
-            .limit(1)
+        # Step 8: Build threading headers
+        # In-Reply-To = the lead's inbound message (the one we're directly replying to)
+        # References  = every Message-ID in the thread so far, in order
+        all_logs_result = await db.execute(
+            select(EmailLog.message_id)
+            .where(EmailLog.lead_id == lead.id)
+            .order_by(EmailLog.created_at.asc())
         )
-        recent_log = recent_log_result.scalar_one_or_none()
-        reply_to_mid = recent_log.message_id if recent_log else None
-        # Build references chain
-        prior_refs = ""
-        if recent_log:
-            prior_refs = f"{references} {reply_to_mid}".strip() if references else (reply_to_mid or "")
+        prior_message_ids = [row[0] for row in all_logs_result.fetchall() if row[0]]
+        # Append the inbound message if not already saved (flush happened above)
+        if message_id and message_id not in prior_message_ids:
+            prior_message_ids.append(message_id)
+        thread_references = " ".join(prior_message_ids) if prior_message_ids else None
 
         # Step 9: Send reply
-        reply_subject = f"Re: {subject}" if subject and not subject.startswith("Re:") else subject or "Following up"
+        reply_subject = f"Re: {subject}" if subject and not subject.lower().startswith("re:") else subject or "Following up"
         to_name = f"{lead.first_name or ''} {lead.last_name or ''}".strip() or lead.email
 
         sent_message_id = await send_email(
@@ -165,8 +165,8 @@ async def handle_reply(reply_data: dict) -> None:
             to_name=to_name,
             subject=reply_subject,
             body_html=ai_reply,
-            reply_to_message_id=reply_to_mid,
-            thread_references=prior_refs or None,
+            reply_to_message_id=message_id,   # In-Reply-To = lead's message
+            thread_references=thread_references,
         )
 
         # Step 10: Save outbound AI reply to email_logs
