@@ -123,14 +123,22 @@ async def poll_imap_replies(handle_reply_callback) -> None:
             await imap.login(settings.IMAP_USER, settings.IMAP_PASS)
             await imap.select(settings.IMAP_REPLY_FOLDER)
 
+            # Search returns sequence numbers; use imap.store (not uid store) to mark Seen
             _, data = await imap.search("UNSEEN")
-            uids = data[0].split() if data and data[0] else []
+            uid_list = data[0].split() if data and data[0] else []
 
-            for uid in uids:
+            for uid in uid_list:
+                uid_str = uid.decode() if isinstance(uid, bytes) else str(uid)
                 try:
-                    _, msg_data = await imap.fetch(uid, "(RFC822)")
-                    raw = msg_data[1] if len(msg_data) > 1 else None
+                    _, msg_data = await imap.fetch(uid_str, "(RFC822)")
+                    # Find the raw bytes part — it's the largest bytes item in the response
+                    raw = None
+                    for part in msg_data:
+                        if isinstance(part, (bytes, bytearray)) and len(part) > 100:
+                            raw = bytes(part)
+                            break
                     if not raw:
+                        logger.warning("[IMAP] No raw data for seq %s — skipping", uid_str)
                         continue
 
                     parser = email.parser.BytesParser(policy=email.policy.default)
@@ -171,11 +179,12 @@ async def poll_imap_replies(handle_reply_callback) -> None:
 
                     await handle_reply_callback(reply_data)
 
-                    # Mark as Seen
-                    await imap.uid("store", uid.decode() if isinstance(uid, bytes) else uid, "+FLAGS", "\\Seen")
+                    # Mark as Seen using sequence number STORE (consistent with SEARCH above)
+                    await imap.store(uid_str, "+FLAGS", "\\Seen")
+                    logger.info("[IMAP] Processed and marked Seen: seq=%s from=%s", uid_str, from_email)
 
                 except Exception as e:
-                    logger.error("[IMAP] Error processing message uid %s: %s", uid, e)
+                    logger.error("[IMAP] Error processing uid %s: %s", uid_str, e)
 
             await imap.logout()
 
