@@ -16,4 +16,4 @@ class EmailLog(Base):
     subject = Column(String(500))
     body = Column(Text)
     received_at = Column(DateTime(timezone=True))
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
