@@ -29,7 +29,7 @@ export default function CampaignsPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [outreaching, setOutreaching] = useState(false);
-  const [outreachDone, setOutreachDone] = useState(false);
+  const [outreachResult, setOutreachResult] = useState<string | null>(null);
 
   useEffect(() => { fetchCampaigns(); }, []);
 
@@ -90,11 +90,14 @@ export default function CampaignsPage() {
 
   async function handleSendOutreach() {
     setOutreaching(true);
-    setOutreachDone(false);
+    setOutreachResult(null);
     try {
-      await triggerOutreachJob();
-      setOutreachDone(true);
-      setTimeout(() => setOutreachDone(false), 4000);
+      const result = await triggerOutreachJob();
+      const msg = result.sent > 0
+        ? `${result.sent} email${result.sent === 1 ? "" : "s"} sent`
+        : "No emails sent — check that your campaign is active and you have scored leads above the minimum score";
+      setOutreachResult(msg);
+      setTimeout(() => setOutreachResult(null), 6000);
     } catch (e: unknown) {
       const msg = e && typeof e === "object" && "error" in e ? String((e as { error: string }).error) : "Outreach failed";
       alert(msg);
@@ -123,8 +126,10 @@ export default function CampaignsPage() {
         <div className="flex items-center justify-between mb-6">
           <h1 className="text-2xl font-bold text-gray-900">Campaigns</h1>
           <div className="flex items-center gap-2">
-            {outreachDone && (
-              <span className="text-sm text-green-600 font-medium">Outreach sent — leads updated</span>
+            {outreachResult && (
+              <span className={`text-sm font-medium ${outreachResult.startsWith("No emails") ? "text-amber-600" : "text-green-600"}`}>
+                {outreachResult}
+              </span>
             )}
             <Button variant="secondary" onClick={handleSendOutreach} disabled={outreaching}>
               <Send size={16} />

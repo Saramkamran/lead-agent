@@ -119,21 +119,24 @@ async def job_send_daily_outreach() -> None:
                         body_html=cold_email.body or "",
                     )
 
-                    cold_email.status = "sent" if message_id else "failed"
-                    cold_email.sent_at = datetime.now(timezone.utc)
-
-                    db.add(EmailLog(
-                        id=str(uuid.uuid4()),
-                        lead_id=lead.id,
-                        direction="outbound",
-                        message_id=message_id,
-                        subject=cold_email.subject,
-                        body=cold_email.body,
-                        received_at=datetime.now(timezone.utc),
-                    ))
-
-                    lead.status = "contacted"
-                    sent += 1
+                    if message_id:
+                        cold_email.status = "sent"
+                        cold_email.sent_at = datetime.now(timezone.utc)
+                        db.add(EmailLog(
+                            id=str(uuid.uuid4()),
+                            lead_id=lead.id,
+                            direction="outbound",
+                            message_id=message_id,
+                            subject=cold_email.subject,
+                            body=cold_email.body,
+                            received_at=datetime.now(timezone.utc),
+                        ))
+                        lead.status = "contacted"
+                        sent += 1
+                    else:
+                        cold_email.status = "failed"
+                        cold_email.sent_at = datetime.now(timezone.utc)
+                        logger.error("[OUTREACH JOB] SMTP send failed for lead %s — status stays scored", lead.email)
                 except Exception as e:
                     logger.error("[OUTREACH JOB] Failed to process lead %s: %s", lead.email, e)
 
@@ -198,16 +201,17 @@ async def job_send_followups() -> None:
                     )
                     followup_1.status = "sent" if message_id else "failed"
                     followup_1.sent_at = now
-                    db.add(EmailLog(
-                        id=str(uuid.uuid4()),
-                        lead_id=lead.id,
-                        direction="outbound",
-                        message_id=message_id,
-                        subject=followup_1.subject,
-                        body=followup_1.body,
-                        received_at=now,
-                    ))
-                    sent += 1
+                    if message_id:
+                        db.add(EmailLog(
+                            id=str(uuid.uuid4()),
+                            lead_id=lead.id,
+                            direction="outbound",
+                            message_id=message_id,
+                            subject=followup_1.subject,
+                            body=followup_1.body,
+                            received_at=now,
+                        ))
+                        sent += 1
 
                 # Send followup_2 if followup_1 was sent 7+ days ago and followup_2 not yet sent
                 elif (
@@ -226,16 +230,17 @@ async def job_send_followups() -> None:
                     )
                     followup_2.status = "sent" if message_id else "failed"
                     followup_2.sent_at = now
-                    db.add(EmailLog(
-                        id=str(uuid.uuid4()),
-                        lead_id=lead.id,
-                        direction="outbound",
-                        message_id=message_id,
-                        subject=followup_2.subject,
-                        body=followup_2.body,
-                        received_at=now,
-                    ))
-                    sent += 1
+                    if message_id:
+                        db.add(EmailLog(
+                            id=str(uuid.uuid4()),
+                            lead_id=lead.id,
+                            direction="outbound",
+                            message_id=message_id,
+                            subject=followup_2.subject,
+                            body=followup_2.body,
+                            received_at=now,
+                        ))
+                        sent += 1
 
             except Exception as e:
                 logger.error("[FOLLOWUP JOB] Failed to process lead %s: %s", lead.email, e)

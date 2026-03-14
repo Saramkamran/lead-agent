@@ -189,4 +189,4 @@ export const triggerScoreJob = () =>
   apiFetch<{ ok: boolean; job: string }>("/jobs/score", { method: "POST" });
 
 export const triggerOutreachJob = () =>
-  apiFetch<{ ok: boolean; job: string }>("/jobs/outreach", { method: "POST" });
+  apiFetch<{ ok: boolean; job: string; sent: number }>("/jobs/outreach", { method: "POST" });

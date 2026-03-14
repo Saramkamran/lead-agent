@@ -24,8 +24,8 @@ async def trigger_score(_=Depends(get_current_user)):
 
 @router.post("/outreach")
 async def trigger_outreach(_=Depends(get_current_user)):
-    await job_send_daily_outreach()
-    return {"ok": True, "job": "send_daily_outreach"}
+    sent = await job_send_daily_outreach()
+    return {"ok": True, "job": "send_daily_outreach", "sent": sent}
 
 
 @router.post("/followups")
