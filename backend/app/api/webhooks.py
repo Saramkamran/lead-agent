@@ -6,6 +6,7 @@ from email.utils import parseaddr
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.core.database import get_db
 from app.models.campaign import Campaign
@@ -115,6 +116,7 @@ async def brevo_inbound(payload: dict, db: AsyncSession = Depends(get_db)):
         "timestamp": datetime.now(timezone.utc).isoformat(),
     })
     conversation.thread = thread
+    flag_modified(conversation, "thread")
     conversation.sentiment = intent
     await db.flush()
 

@@ -2,6 +2,7 @@ import logging
 from datetime import datetime, timezone
 
 from openai import AsyncOpenAI
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.core.config import settings
 
@@ -108,6 +109,7 @@ async def generate_reply(conversation, lead, campaign) -> str:
         "timestamp": datetime.now(timezone.utc).isoformat(),
     })
     conversation.thread = list(thread)
+    flag_modified(conversation, "thread")
     conversation.updated_at = datetime.now(timezone.utc)
 
     logger.info("Generated AI reply for conversation %s", conversation.id)
