@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.models.campaign import Campaign
-from app.models.conversation import Conversation
+from app.models.email_log import EmailLog
 from app.models.lead import Lead
 from app.models.message import Message
 from app.services.email_service import send_email
@@ -116,14 +116,22 @@ async def job_send_daily_outreach() -> None:
                         to_email=lead.email,
                         to_name=f"{lead.first_name or ''} {lead.last_name or ''}".strip() or lead.email,
                         subject=cold_email.subject or "",
-                        body=cold_email.body or "",
-                        from_email=campaign.sender_email or "",
-                        from_name=campaign.sender_name or "",
+                        body_html=cold_email.body or "",
                     )
 
-                    cold_email.provider_message_id = message_id
                     cold_email.status = "sent" if message_id else "failed"
                     cold_email.sent_at = datetime.now(timezone.utc)
+
+                    db.add(EmailLog(
+                        id=str(uuid.uuid4()),
+                        lead_id=lead.id,
+                        direction="outbound",
+                        message_id=message_id,
+                        subject=cold_email.subject,
+                        body=cold_email.body,
+                        received_at=datetime.now(timezone.utc),
+                    ))
+
                     lead.status = "contacted"
                     sent += 1
                 except Exception as e:
@@ -163,21 +171,15 @@ async def job_send_followups() -> None:
                 followup_1 = next((m for m in messages if m.type == "followup_1"), None)
                 followup_2 = next((m for m in messages if m.type == "followup_2"), None)
 
-                # Find the campaign for sender context
-                campaign_result = await db.execute(
-                    select(Campaign).where(Campaign.status == "active").limit(1)
+                # Find the most recent outbound email_log for threading
+                log_result = await db.execute(
+                    select(EmailLog)
+                    .where(EmailLog.lead_id == lead.id, EmailLog.direction == "outbound")
+                    .order_by(EmailLog.created_at.desc())
+                    .limit(1)
                 )
-                campaign = campaign_result.scalar_one_or_none()
-
-                if not campaign:
-                    campaign_result = await db.execute(select(Campaign).limit(1))
-                    campaign = campaign_result.scalar_one_or_none()
-
-                from_email = campaign.sender_email if campaign else ""
-                from_name = campaign.sender_name if campaign else ""
-
-                if not from_email:
-                    continue
+                recent_log = log_result.scalar_one_or_none()
+                reply_to_mid = recent_log.message_id if recent_log else None
 
                 # Send followup_1 if cold_email was sent 3+ days ago and followup_1 not yet sent
                 if (
@@ -191,13 +193,20 @@ async def job_send_followups() -> None:
                         to_email=lead.email,
                         to_name=f"{lead.first_name or ''} {lead.last_name or ''}".strip() or lead.email,
                         subject=followup_1.subject or "",
-                        body=followup_1.body or "",
-                        from_email=from_email,
-                        from_name=from_name,
+                        body_html=followup_1.body or "",
+                        reply_to_message_id=reply_to_mid,
                     )
-                    followup_1.provider_message_id = message_id
                     followup_1.status = "sent" if message_id else "failed"
                     followup_1.sent_at = now
+                    db.add(EmailLog(
+                        id=str(uuid.uuid4()),
+                        lead_id=lead.id,
+                        direction="outbound",
+                        message_id=message_id,
+                        subject=followup_1.subject,
+                        body=followup_1.body,
+                        received_at=now,
+                    ))
                     sent += 1
 
                 # Send followup_2 if followup_1 was sent 7+ days ago and followup_2 not yet sent
@@ -212,13 +221,20 @@ async def job_send_followups() -> None:
                         to_email=lead.email,
                         to_name=f"{lead.first_name or ''} {lead.last_name or ''}".strip() or lead.email,
                         subject=followup_2.subject or "",
-                        body=followup_2.body or "",
-                        from_email=from_email,
-                        from_name=from_name,
+                        body_html=followup_2.body or "",
+                        reply_to_message_id=reply_to_mid,
                     )
-                    followup_2.provider_message_id = message_id
                     followup_2.status = "sent" if message_id else "failed"
                     followup_2.sent_at = now
+                    db.add(EmailLog(
+                        id=str(uuid.uuid4()),
+                        lead_id=lead.id,
+                        direction="outbound",
+                        message_id=message_id,
+                        subject=followup_2.subject,
+                        body=followup_2.body,
+                        received_at=now,
+                    ))
                     sent += 1
 
             except Exception as e:

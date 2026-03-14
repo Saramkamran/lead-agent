@@ -15,8 +15,8 @@ Build each phase completely before moving to the next.
 1. Import leads via CSV or manual entry
 2. Score leads automatically using rule-based logic
 3. Generate personalized outreach emails using OpenAI
-4. Send emails via Brevo (formerly Sendinblue)
-5. Detect replies and classify intent (positive / neutral / not interested)
+4. Send emails via SMTP (aiosmtplib) — no third-party email service
+5. Detect replies via IMAP polling (aioimaplib) and classify intent (positive / neutral / not interested)
 6. Hold simple AI conversations to book meetings
 7. Display everything in a clean dashboard
 
@@ -30,7 +30,8 @@ Build each phase completely before moving to the next.
 | AI | OpenAI GPT-4o-mini (scoring/offers/messages) + GPT-4o (conversations only) |
 | Database | PostgreSQL via SQLAlchemy 2.0 async + Alembic |
 | Background jobs | APScheduler (runs inside FastAPI process) |
-| Email | Brevo Transactional Email API v3 |
+| Email sending | aiosmtplib over STARTTLS (port 587) or SSL (port 465) |
+| Email receiving | aioimaplib IMAP polling loop — no webhooks, no external service |
 | Frontend | Next.js 14, TypeScript, Tailwind CSS, shadcn/ui |
 | Auth | JWT via python-jose, bcrypt password hashing |
 | Deployment | Supabase (PostgreSQL) + Render (backend) + Vercel (frontend) — all free tier |
@@ -101,8 +102,18 @@ messages (
   body                TEXT,
   status              VARCHAR(50) DEFAULT 'pending',  -- pending, sent, opened, clicked
   sent_at             TIMESTAMP,
-  provider_message_id VARCHAR(255),  -- Brevo message ID
   created_at          TIMESTAMP DEFAULT NOW()
+)
+
+email_logs (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  lead_id       UUID REFERENCES leads(id) ON DELETE CASCADE,
+  direction     VARCHAR(20) NOT NULL DEFAULT 'outbound',  -- outbound, inbound
+  message_id    VARCHAR(255),        -- SMTP Message-ID for thread correlation
+  subject       VARCHAR(500),
+  body          TEXT,
+  received_at   TIMESTAMP WITH TIME ZONE,
+  created_at    TIMESTAMP DEFAULT NOW()
 )
 
 conversations (
@@ -155,7 +166,7 @@ Build in this order. Fully implement each before moving to the next.
 - FastAPI app factory with: CORS middleware, request logging middleware, global error handler
 - SQLAlchemy async engine + session dependency injection
 - Alembic configured for async PostgreSQL (asyncpg driver)
-- Migration for all 4 tables above
+- Migration for all 5 tables above
 - `GET /health` → `{ "status": "ok", "db": "ok" }`
 - `requirements.txt` with all pinned versions
 
@@ -340,77 +351,92 @@ After generating, append both the inbound reply and the AI response to
 
 ### `email_service.py`
 
-Use `httpx` (async) to call the Brevo REST API directly. No SDK required.
+Use `aiosmtplib` for async SMTP sending and `aioimaplib` for async IMAP polling.
+No third-party email service. No webhooks. No SDK.
 
-**Brevo API details:**
-- Endpoint: `POST https://api.brevo.com/v3/smtp/email`
-- Auth header: `api-key: {BREVO_API_KEY}` (not a Bearer token)
-- Content-Type: `application/json`
+**Sending — aiosmtplib**
 
-**Request payload shape:**
-```json
-{
-  "sender": { "name": "Your Name", "email": "you@yourdomain.com" },
-  "to": [{ "email": "lead@example.com", "name": "Lead Name" }],
-  "subject": "Your subject here",
-  "textContent": "Plain text body here"
-}
+```python
+async def send_email(
+    to_email: str,
+    to_name: str,
+    subject: str,
+    body_html: str,
+    body_text: str | None = None,
+    reply_to_message_id: str | None = None,
+    thread_references: str | None = None,
+) -> str:
 ```
 
-**Functions to implement:**
+- Build a standards-compliant `EmailMessage` with `From`, `To`, `Subject`,
+  `Message-ID`, `Date` headers
+- Set `In-Reply-To` and `References` headers when replying — these keep emails
+  in the same thread in every mail client
+- Generate a unique `Message-ID` per email:
+  `<uuid4>@<domain-from-SMTP_FROM_EMAIL>`
+- Use `STARTTLS` on port 587 (`start_tls=True`) or SSL on port 465 (`use_tls=True`)
+- On success: return the `message_id` string so the caller can store it in `email_logs`
+- On failure: log the full error with timestamp, mark `messages.status = 'failed'`,
+  do NOT raise (background jobs must continue)
 
-`send_email(to_email, to_name, subject, body, from_email, from_name) -> str`
-- POST to Brevo API with the payload above
-- On success: extract `messageId` from response JSON, store in `messages.provider_message_id`, return the message ID
-- On failure: log the full error response with timestamp, mark `messages.status = 'failed'`, do NOT raise (background jobs must continue)
+**Receiving — IMAP polling loop**
 
-**Note:** `htmlContent` can be used instead of `textContent` if you want to send HTML emails. For this project, use `textContent` for simplicity and deliverability.
+```python
+async def poll_imap_replies(handle_reply_callback) -> None:
+```
 
-### Webhook endpoints
+- Long-running `asyncio` loop started at FastAPI startup as a background task
+- Connect to IMAP over SSL (`aioimaplib.IMAP4_SSL`)
+- On each tick: search `UNSEEN` messages in `IMAP_REPLY_FOLDER`
+- For each unseen message:
+  - Parse `From`, `Subject`, `Message-ID`, `In-Reply-To`, `References` headers
+  - Extract plain-text body (fall back to stripping HTML if no text part)
+  - Build a `reply_data` dict and call `handle_reply_callback(reply_data)`
+  - Mark message as `\Seen` so it is not reprocessed
+- Sleep `IMAP_POLL_INTERVAL_SECONDS` between ticks
+- Catch and log all exceptions — never crash the loop
 
-`POST /webhooks/brevo/events` — handle Brevo transactional email event webhooks.
+### `reply_handler.py`
 
-Brevo sends a JSON payload per event. The relevant fields are:
-- `event` — string, e.g. `"opened"`, `"clicked"`, `"delivered"`, `"hard_bounce"`, `"soft_bounce"`
-- `email` — the recipient's email address
-- `messageId` — matches `messages.provider_message_id`
-- `date` — ISO timestamp
+```python
+async def handle_reply(reply_data: dict) -> None:
+```
 
-Event handling:
-- `opened` → find message by `provider_message_id`, update `messages.status = 'opened'`
-- `clicked` → update `messages.status = 'clicked'`
-- `hard_bounce` or `soft_bounce` → update `messages.status = 'bounced'`, update `leads.status = 'bounced'`
-- All other events → log and ignore
+Called by the IMAP poller for every new unseen message.
 
-Configure this webhook URL in the Brevo dashboard under:
-**Transactional → Settings → Webhook → Add a new webhook**
-URL: `https://your-app.onrender.com/webhooks/brevo/events`
-Select events: Delivered, Opened, Clicked, Hard bounce, Soft bounce
-
-`POST /webhooks/brevo/inbound` — handle Brevo inbound email parsing.
-
-Brevo inbound parsed email payload fields (note: different from SendGrid):
-- `From` — sender email address string, e.g. `"John Smith <john@example.com>"`
-- `Subject` — email subject string
-- `TextBody` — plain text body of the reply
-- `To` — recipient address
-
-Parsing steps:
-1. Extract sender email from `From` field (handle both `name <email>` and bare `email` formats)
-2. Extract plain text from `TextBody`
-3. Find lead by matching sender email against `leads.email`
-4. Call `classify_intent(TextBody)`
-5. If positive or neutral:
-   - Create `conversations` record with first thread entry
+Steps:
+1. Match the inbound `References` / `In-Reply-To` headers against
+   `email_logs.message_id` to find the campaign thread
+2. If no match, log and return — not from one of our campaigns
+3. Look up the lead by `from_email`
+4. Save the inbound message to `email_logs` with `direction='inbound'`
+5. Build conversation history from `email_logs` ordered by `created_at`
+6. Call `classify_intent(body)`
+7. If positive or neutral:
+   - Create or update `conversations` record with thread entry
    - Call `generate_reply()`
-   - Send reply via `email_service`
+   - Send AI reply via `send_email()` with correct `In-Reply-To` + `References`
+   - Save outbound AI reply to `email_logs` with `direction='outbound'`
    - Update `leads.status = 'replied'`
-6. If negative:
+8. If negative:
    - Update `leads.status = 'not_interested'`
+9. If AI detects meeting intent: update `leads.status = 'meeting_scheduled'`
 
-Configure inbound parsing in the Brevo dashboard under:
-**Transactional → Settings → Inbound parsing**
-URL: `https://your-app.onrender.com/webhooks/brevo/inbound`
+### Startup wiring in `main.py`
+
+```python
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    task = asyncio.create_task(poll_imap_replies(handle_reply))
+    yield
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+app = FastAPI(lifespan=lifespan)
+```
 
 ### Background Jobs (APScheduler)
 
@@ -429,7 +455,7 @@ Start scheduler when FastAPI starts. Three jobs:
   and `status='scored'`
 - Respect `campaign.daily_limit` — count emails already sent today
 - For each eligible lead: generate messages (if not generated) → send cold_email
-  → update `leads.status = 'contacted'`
+  via SMTP → save `message_id` to `email_logs` → update `leads.status = 'contacted'`
 
 **Job 3: Send follow-ups**
 - Schedule: daily at 9:30 AM
@@ -498,6 +524,7 @@ Next.js 14 App Router, TypeScript, Tailwind CSS, shadcn/ui.
 - PostgreSQL 15 (postgresql.org) — create a database named `leadgen`
 - Python 3.11 (pyenv recommended)
 - Node.js 18+ (nvm recommended)
+- An email account with SMTP and IMAP access enabled
 
 Generate a `setup.sh` in the project root:
 ```bash
@@ -551,14 +578,6 @@ First request after sleep takes ~30 seconds. Acceptable for active use.
    `NEXT_PUBLIC_API_URL = https://your-app.onrender.com`
 4. Deploy → note your URL: `https://your-app.vercel.app`
 
-**Brevo webhook configuration:**
-- Go to Brevo dashboard → Transactional → Settings
-- **Webhook (event tracking):**
-  URL: `https://your-app.onrender.com/webhooks/brevo/events`
-  Events to enable: Delivered, Opened, Clicked, Hard bounce, Soft bounce
-- **Inbound parsing:**
-  URL: `https://your-app.onrender.com/webhooks/brevo/inbound`
-
 ### `.env.example`
 
 ```env
@@ -572,10 +591,21 @@ JWT_EXPIRE_HOURS=8
 # OpenAI
 OPENAI_API_KEY=sk-...
 
-# Brevo (formerly Sendinblue)
-BREVO_API_KEY=xkeysib-...
-BREVO_FROM_EMAIL=you@yourdomain.com
-BREVO_FROM_NAME=Your Name
+# ── SMTP (Outbound) ──────────────────────────────────────────
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=you@yourdomain.com
+SMTP_PASS=your_app_password
+SMTP_FROM_NAME=Your Name
+SMTP_FROM_EMAIL=you@yourdomain.com
+
+# ── IMAP (Inbound) ───────────────────────────────────────────
+IMAP_HOST=imap.gmail.com
+IMAP_PORT=993
+IMAP_USER=you@yourdomain.com
+IMAP_PASS=your_app_password
+IMAP_POLL_INTERVAL_SECONDS=60
+IMAP_REPLY_FOLDER=INBOX
 
 # App URLs
 BACKEND_URL=http://localhost:8000
@@ -584,6 +614,22 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 # Scheduler timezone (e.g. America/New_York, Europe/London, Asia/Karachi)
 SCHEDULER_TIMEZONE=UTC
 ```
+
+### SMTP / IMAP Provider Reference
+
+| Provider          | SMTP Host                  | SMTP Port | IMAP Host                    | IMAP Port | Notes |
+|-------------------|----------------------------|-----------|------------------------------|-----------|-------|
+| Gmail             | smtp.gmail.com             | 587       | imap.gmail.com               | 993       | Enable IMAP in Gmail settings; use App Password if 2FA on |
+| Google Workspace  | smtp.gmail.com             | 587       | imap.gmail.com               | 993       | Same as Gmail; use Workspace email |
+| Outlook / Hotmail | smtp-mail.outlook.com      | 587       | outlook.office365.com        | 993       | Use App Password if MFA enabled |
+| Microsoft 365     | smtp.office365.com         | 587       | outlook.office365.com        | 993       | Admin must allow SMTP AUTH in M365 Admin Center |
+| Zoho Mail         | smtp.zoho.com              | 587       | imap.zoho.com                | 993       | Enable IMAP in Zoho Mail settings |
+| Custom cPanel     | mail.yourdomain.com        | 587       | mail.yourdomain.com          | 993       | Use full email as username |
+| Fastmail          | smtp.fastmail.com          | 587       | imap.fastmail.com            | 993       | Use App Password |
+
+> **Gmail / Google Workspace App Password:**
+> myaccount.google.com → Security → 2-Step Verification → App passwords
+> Generate one for "Mail" and use it as both SMTP_PASS and IMAP_PASS.
 
 ---
 
@@ -594,19 +640,30 @@ SCHEDULER_TIMEZONE=UTC
   test_lead_import.py     — CSV parsing, dedup, validation edge cases
   test_scoring.py         — All scoring rule combinations, verify no LLM called
   test_message_gen.py     — Mock OpenAI, verify caching (no duplicate API calls)
-  test_reply_webhook.py   — Intent classification routing (positive/neutral/negative)
+  test_reply_handler.py   — Intent classification routing (positive/neutral/negative),
+                            thread correlation via Message-ID / References headers
   test_auth.py            — Register, login, JWT expiry, protected route rejection
-  test_email_service.py   — Mock httpx, verify Brevo API payload shape and header format
+  test_email_service.py   — Mock aiosmtplib, verify SMTP payload shape,
+                            Message-ID generation, In-Reply-To / References threading headers
+  test_imap_poller.py     — Mock aioimaplib, verify unseen message processing,
+                            Seen flag marking, callback invocation
 ```
 
 Use `pytest` + `pytest-asyncio` + `httpx.AsyncClient`.
-Mock all external services (OpenAI, Brevo API) using `unittest.mock.patch`.
+Mock all external services (OpenAI, aiosmtplib, aioimaplib) using `unittest.mock.patch`.
 
 For `test_email_service.py`, verify:
-- The `api-key` header is set correctly (not `Authorization: Bearer`)
-- The payload contains `sender`, `to`, `subject`, `textContent`
-- `provider_message_id` is extracted from the response and stored
-- On API failure, status is set to `failed` and no exception propagates
+- The SMTP credentials from env vars are used (never hardcoded)
+- The payload contains correct `From`, `To`, `Subject`, `Message-ID` headers
+- `In-Reply-To` and `References` headers are set correctly when replying
+- The returned `message_id` matches the one stored in `email_logs`
+- On SMTP failure, `messages.status` is set to `failed` and no exception propagates
+
+For `test_imap_poller.py`, verify:
+- Only `UNSEEN` messages are fetched
+- `handle_reply_callback` is called once per unseen message
+- Messages are marked `\Seen` after processing
+- Exceptions in one message do not crash the loop
 
 ---
 
@@ -620,14 +677,15 @@ orient quickly without re-reading all the code:
 
 ## What this is
 AI lead generation system: import leads → score → personalize emails →
-send → detect replies → AI conversation → book meetings.
+send via SMTP → detect replies via IMAP → AI conversation → book meetings.
 
 ## Stack
 - Backend: FastAPI + SQLAlchemy async + APScheduler (port 8000)
 - Frontend: Next.js 14 App Router (port 3000)
 - Database: PostgreSQL (Supabase in prod, local in dev)
 - AI: OpenAI GPT-4o-mini (scoring/messages) + GPT-4o (conversations)
-- Email: Brevo Transactional Email API v3 (httpx, no SDK)
+- Email sending: aiosmtplib (SMTP, no third-party service)
+- Email receiving: aioimaplib IMAP polling loop (no webhooks)
 
 ## Key architectural decisions
 - No Docker, no Redis, no message queue
@@ -635,18 +693,21 @@ send → detect replies → AI conversation → book meetings.
 - AI outputs cached in DB — never regenerate existing leads
 - Scoring is 100% rule-based (no LLM)
 - Single user auth (JWT, 8hr expiry)
-- Brevo API auth uses `api-key` header, NOT `Authorization: Bearer`
-- Brevo inbound webhook fields: `From`, `Subject`, `TextBody` (not SendGrid format)
-- messages table uses `provider_message_id` column (not `sendgrid_id`)
+- SMTP auth uses SMTP_USER / SMTP_PASS env vars (STARTTLS on 587, SSL on 465)
+- Reply detection is a background asyncio task polling IMAP every IMAP_POLL_INTERVAL_SECONDS
+- Thread correlation uses Message-ID / In-Reply-To / References email headers
+- email_logs.message_id stores the SMTP Message-ID for reply matching
+- email_logs.direction distinguishes outbound vs inbound messages
 
 ## File map
-- /backend/app/services/scoring_service.py — rule-based lead scoring
-- /backend/app/services/message_service.py — OpenAI message generation
+- /backend/app/services/scoring_service.py      — rule-based lead scoring
+- /backend/app/services/message_service.py      — OpenAI message generation
 - /backend/app/services/conversation_service.py — reply handling + AI chat
-- /backend/app/services/email_service.py — Brevo sending via httpx
-- /backend/app/jobs/ — APScheduler background jobs
-- /backend/app/api/ — FastAPI route handlers
-- /frontend/lib/api.ts — typed API client
+- /backend/app/services/email_service.py        — SMTP sending + IMAP polling loop
+- /backend/app/services/reply_handler.py        — matches inbound replies to leads, triggers AI
+- /backend/app/jobs/                            — APScheduler background jobs
+- /backend/app/api/                             — FastAPI route handlers
+- /frontend/lib/api.ts                          — typed API client
 
 ## Environment
 Copy .env.example to .env and fill in values before running.
@@ -664,8 +725,9 @@ Phase 1 → Backend core + DB + auth + lead API
 Phase 2 → AI services (scoring → offer → messages → conversation)
           Verify: score 5 leads manually, check offers cached, generate message set
 
-Phase 3 → Email sending + background jobs + webhooks
-          Verify: trigger scoring job manually, send test email via Brevo sandbox
+Phase 3 → Email sending (SMTP) + IMAP polling + reply handler + background jobs
+          Verify: send test email via SMTP, reply to it manually,
+                  confirm IMAP poller picks it up and AI responds within one poll interval
 
 Phase 4 → Frontend dashboard
           Verify: all pages load, CSV import works end-to-end in browser
@@ -685,8 +747,9 @@ No TODO comments. No placeholder functions. Every function fully implemented.
 ## SUCCESS CRITERIA
 
 - [ ] Import 20 leads via CSV → all reach `scored` status within 10 minutes
-- [ ] Start a campaign → leads above min_score receive personalized cold emails
-- [ ] Simulate inbound reply → AI response generated and sent automatically
+- [ ] Start a campaign → leads above min_score receive personalized cold emails via SMTP
+- [ ] Reply to a sent email manually → IMAP poller detects it within one poll interval
+- [ ] AI response generated and sent automatically via SMTP, in the same thread
 - [ ] All 4 dashboard pages load with real data, no console errors
 - [ ] `alembic upgrade head` runs clean against Supabase with no errors
 - [ ] Render deploy logs show `Application startup complete`
@@ -701,7 +764,7 @@ No TODO comments. No placeholder functions. Every function fully implemented.
 This project is designed for 3–4 Claude Code sessions on Pro:
 
 - **Session 1:** Phase 1 (backend foundation)
-- **Session 2:** Phases 2 + 3 (AI services + email jobs)
+- **Session 2:** Phases 2 + 3 (AI services + SMTP/IMAP email jobs)
 - **Session 3:** Phase 4 (frontend)
 - **Session 4:** Phase 5 + 6 (deploy + tests)
 

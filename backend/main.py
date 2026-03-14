@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -6,8 +7,10 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import auth, campaigns, conversations, health, jobs, leads, webhooks
+from app.api import auth, campaigns, conversations, health, jobs, leads
 from app.jobs.scheduler import start_scheduler, stop_scheduler
+from app.services.email_service import poll_imap_replies
+from app.services.reply_handler import handle_reply
 
 logging.basicConfig(
     level=logging.INFO,
@@ -15,12 +18,33 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+_imap_task: asyncio.Task | None = None
+
+
+async def start_imap_poller() -> None:
+    global _imap_task
+    _imap_task = asyncio.create_task(poll_imap_replies(handle_reply))
+    logger.info("[IMAP] Poller task created")
+
+
+async def stop_imap_poller() -> None:
+    global _imap_task
+    if _imap_task:
+        _imap_task.cancel()
+        try:
+            await _imap_task
+        except asyncio.CancelledError:
+            pass
+        logger.info("[IMAP] Poller task stopped")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await start_scheduler()
+    await start_imap_poller()
     logger.info("Application startup complete")
     yield
+    await stop_imap_poller()
     await stop_scheduler()
     logger.info("Application shutdown")
 
@@ -66,7 +90,6 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(leads.router)
     app.include_router(campaigns.router)
-    app.include_router(webhooks.router)
     app.include_router(conversations.router)
     app.include_router(jobs.router)
 

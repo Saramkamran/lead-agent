@@ -135,17 +135,15 @@ async def manual_reply(
     conversation.thread = thread
     conversation.updated_at = datetime.now(timezone.utc)
 
-    # Send via Brevo if we have lead email
+    # Send via SMTP if we have lead email and SMTP is configured
     if lead:
         from app.core.config import settings
-        if settings.BREVO_FROM_EMAIL:
+        if settings.SMTP_FROM_EMAIL:
             await send_email(
                 to_email=lead.email,
                 to_name=f"{lead.first_name or ''} {lead.last_name or ''}".strip() or lead.email,
                 subject="Following up",
-                body=data.body,
-                from_email=settings.BREVO_FROM_EMAIL,
-                from_name=settings.BREVO_FROM_NAME,
+                body_html=data.body,
             )
 
     await db.commit()

@@ -44,7 +44,9 @@ async def client(engine):
                 raise
 
     with patch("main.start_scheduler", new_callable=AsyncMock), \
-         patch("main.stop_scheduler", new_callable=AsyncMock):
+         patch("main.stop_scheduler", new_callable=AsyncMock), \
+         patch("main.start_imap_poller", new_callable=AsyncMock), \
+         patch("main.stop_imap_poller", new_callable=AsyncMock):
         from main import create_app
         _app = create_app()
         _app.dependency_overrides[get_db] = override_get_db

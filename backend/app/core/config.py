@@ -8,9 +8,19 @@ class Settings(BaseSettings):
 
     OPENAI_API_KEY: str = ""
 
-    BREVO_API_KEY: str = ""
-    BREVO_FROM_EMAIL: str = ""
-    BREVO_FROM_NAME: str = ""
+    SMTP_HOST: str = "smtp.gmail.com"
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASS: str = ""
+    SMTP_FROM_NAME: str = ""
+    SMTP_FROM_EMAIL: str = ""
+
+    IMAP_HOST: str = "imap.gmail.com"
+    IMAP_PORT: int = 993
+    IMAP_USER: str = ""
+    IMAP_PASS: str = ""
+    IMAP_POLL_INTERVAL_SECONDS: int = 60
+    IMAP_REPLY_FOLDER: str = "INBOX"
 
     BACKEND_URL: str = "http://localhost:8000"
     NEXT_PUBLIC_API_URL: str = "http://localhost:8000"
