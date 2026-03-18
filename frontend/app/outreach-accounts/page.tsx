@@ -40,6 +40,8 @@ export default function OutreachAccountsPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<OutreachAccountCreate & { is_active?: boolean }>({ ...EMPTY_FORM });
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveSuccess, setSaveSuccess] = useState(false);
   const [showPass, setShowPass] = useState(false);
 
   const [testResult, setTestResult] = useState<{ smtp: string; imap: string; error?: string } | null>(null);
@@ -63,6 +65,8 @@ export default function OutreachAccountsPage() {
     setEditingId(null);
     setForm({ ...EMPTY_FORM });
     setTestResult(null);
+    setSaveError(null);
+    setSaveSuccess(false);
     setShowPass(false);
     setModalOpen(true);
   }
@@ -83,12 +87,16 @@ export default function OutreachAccountsPage() {
       is_active: account.is_active,
     });
     setTestResult(null);
+    setSaveError(null);
+    setSaveSuccess(false);
     setShowPass(false);
     setModalOpen(true);
   }
 
   async function handleSave() {
     setSaving(true);
+    setSaveError(null);
+    setSaveSuccess(false);
     try {
       if (editingId) {
         const update: Record<string, unknown> = {
@@ -101,10 +109,18 @@ export default function OutreachAccountsPage() {
       } else {
         await createOutreachAccount(form);
       }
-      setModalOpen(false);
+      setSaveSuccess(true);
       await load();
-    } catch (e) {
-      console.error(e);
+      setTimeout(() => {
+        setModalOpen(false);
+        setSaveSuccess(false);
+      }, 1200);
+    } catch (e: unknown) {
+      const msg =
+        e && typeof e === "object" && "error" in e
+          ? String((e as { error: string }).error)
+          : "Failed to save account. Check your details and try again.";
+      setSaveError(msg);
     } finally {
       setSaving(false);
     }
@@ -346,6 +362,19 @@ export default function OutreachAccountsPage() {
             </div>
           )}
         </div>
+
+        {saveError && (
+          <div className="mt-3 flex items-start gap-2 rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700">
+            <XCircle size={16} className="mt-0.5 shrink-0" />
+            {saveError}
+          </div>
+        )}
+        {saveSuccess && (
+          <div className="mt-3 flex items-center gap-2 rounded-lg bg-green-50 border border-green-200 px-3 py-2 text-sm text-green-700">
+            <CheckCircle size={16} className="shrink-0" />
+            Account {editingId ? "updated" : "added"} successfully.
+          </div>
+        )}
 
         <div className="flex gap-2 justify-end mt-4 pt-4 border-t border-gray-100">
           <Button variant="secondary" onClick={() => setModalOpen(false)}>Cancel</Button>
