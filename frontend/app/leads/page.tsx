@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   getLeads,
   getLead,
+  getLeadScan,
+  triggerLeadScan,
   updateLead,
   deleteLead,
   importLeads,
@@ -14,15 +16,27 @@ import {
   Message,
   Conversation,
   OutreachAccount,
+  WebsiteScan,
 } from "@/lib/api";
 import { AppShell } from "@/components/layout/app-shell";
 import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
-import { ScoreBadge, StatusBadge } from "@/components/ui/badge";
-import { Upload, X, Trash2, Zap, UserPlus } from "lucide-react";
+import { Badge, ScoreBadge, StatusBadge } from "@/components/ui/badge";
+import { Upload, X, Trash2, Zap, UserPlus, RefreshCw } from "lucide-react";
 
-const STATUS_OPTIONS = ["", "imported", "scored", "contacted", "replied", "booked", "not_interested", "bounced"];
+const STATUS_OPTIONS = [
+  "", "imported", "scored", "contacted", "follow_up_1", "follow_up_2", "follow_up_3",
+  "replied", "booked", "not_interested", "disqualified",
+];
+
+function ScanBadge({ status }: { status?: string }) {
+  if (!status || status === "pending") return <Badge variant="gray">Pending</Badge>;
+  if (status === "scanning") return <Badge variant="gray">Scanning…</Badge>;
+  if (status === "success") return <Badge variant="green">Scanned</Badge>;
+  if (status === "failed") return <Badge variant="gray">Scan failed</Badge>;
+  return null;
+}
 
 export default function LeadsPage() {
   const [leads, setLeads] = useState<Partial<Lead>[]>([]);
@@ -37,6 +51,8 @@ export default function LeadsPage() {
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [slideOpen, setSlideOpen] = useState(false);
   const [editing, setEditing] = useState<Partial<Lead>>({});
+  const [scan, setScan] = useState<WebsiteScan | null>(null);
+  const [scanLoading, setScanLoading] = useState(false);
 
   const [scoring, setScoring] = useState(false);
   const [scoredCount, setScoredCount] = useState<number | null>(null);
@@ -103,7 +119,10 @@ export default function LeadsPage() {
       status: lead.status,
       outreach_account_id: lead.outreach_account_id ?? "",
     });
+    setScan(null);
     setSlideOpen(true);
+    // Load scan data in background
+    getLeadScan(id).then(setScan).catch(() => setScan(null));
   }
 
   async function saveEditing() {
@@ -182,6 +201,19 @@ export default function LeadsPage() {
     }
   }
 
+  async function handleRescan() {
+    if (!selectedLead) return;
+    setScanLoading(true);
+    try {
+      await triggerLeadScan(selectedLead.id);
+      setScan(null);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setScanLoading(false);
+    }
+  }
+
   const totalPages = Math.ceil(total / PAGE_SIZE);
 
   return (
@@ -228,7 +260,7 @@ export default function LeadsPage() {
           >
             <option value="">All statuses</option>
             {STATUS_OPTIONS.filter(Boolean).map((s) => (
-              <option key={s} value={s}>{s.replace("_", " ")}</option>
+              <option key={s} value={s}>{s.replace(/_/g, " ")}</option>
             ))}
           </Select>
         </div>
@@ -241,9 +273,9 @@ export default function LeadsPage() {
                 <th className="px-4 py-3 font-medium text-gray-600">Name</th>
                 <th className="px-4 py-3 font-medium text-gray-600">Email</th>
                 <th className="px-4 py-3 font-medium text-gray-600">Company</th>
-                <th className="px-4 py-3 font-medium text-gray-600">Title</th>
                 <th className="px-4 py-3 font-medium text-gray-600">Score</th>
                 <th className="px-4 py-3 font-medium text-gray-600">Status</th>
+                <th className="px-4 py-3 font-medium text-gray-600">Scan</th>
                 <th className="px-4 py-3 font-medium text-gray-600">Account</th>
                 <th className="px-4 py-3 font-medium text-gray-600">Added</th>
                 <th className="px-4 py-3" />
@@ -266,9 +298,9 @@ export default function LeadsPage() {
                     </td>
                     <td className="px-4 py-3 text-gray-600">{lead.email}</td>
                     <td className="px-4 py-3 text-gray-600">{lead.company ?? "—"}</td>
-                    <td className="px-4 py-3 text-gray-600">{lead.title ?? "—"}</td>
                     <td className="px-4 py-3"><ScoreBadge score={lead.score} /></td>
                     <td className="px-4 py-3"><StatusBadge status={lead.status!} /></td>
+                    <td className="px-4 py-3"><ScanBadge status={lead.scan_status} /></td>
                     <td className="px-4 py-3 text-gray-500 text-xs">{accountLabel(lead.outreach_account_id)}</td>
                     <td className="px-4 py-3 text-gray-500">
                       {lead.created_at ? new Date(lead.created_at).toLocaleDateString() : "—"}
@@ -322,12 +354,56 @@ export default function LeadsPage() {
             </div>
 
             <div className="flex-1 p-6 space-y-6">
-              {/* Score */}
-              <div className="flex items-center gap-3">
+              {/* Score + Status */}
+              <div className="flex items-center gap-3 flex-wrap">
                 <ScoreBadge score={selectedLead.score} />
                 <StatusBadge status={selectedLead.status} />
+                <ScanBadge status={selectedLead.scan_status} />
+                {selectedLead.reply_category && (
+                  <span className="text-xs bg-purple-50 text-purple-700 border border-purple-200 rounded-full px-2 py-0.5">
+                    {selectedLead.reply_category.replace(/_/g, " ")}
+                  </span>
+                )}
                 {selectedLead.score_reason && (
                   <span className="text-xs text-gray-500 italic">{selectedLead.score_reason}</span>
+                )}
+              </div>
+
+              {/* Website Analysis */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-semibold text-gray-700">Website Analysis</h3>
+                  <button
+                    onClick={handleRescan}
+                    disabled={scanLoading}
+                    className="flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-800 disabled:opacity-50"
+                  >
+                    <RefreshCw size={12} className={scanLoading ? "animate-spin" : ""} />
+                    {scanLoading ? "Queuing…" : "Re-scan"}
+                  </button>
+                </div>
+                {scan ? (
+                  <div className="bg-gray-50 rounded-lg p-3 space-y-2 text-sm">
+                    {scan.hook_text && (
+                      <p className="text-gray-700 italic border-l-2 border-indigo-400 pl-3">
+                        &ldquo;{scan.hook_text}&rdquo;
+                      </p>
+                    )}
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-gray-500">
+                      {scan.business_type && <span className="col-span-2 text-gray-700 font-medium">{scan.business_type}</span>}
+                      <span>Booking system: <b className={scan.has_booking_system ? "text-green-600" : "text-red-500"}>{scan.has_booking_system ? "Yes" : "No"}</b></span>
+                      <span>Pricing page: <b className={scan.has_pricing_page ? "text-green-600" : "text-red-500"}>{scan.has_pricing_page ? "Yes" : "No"}</b></span>
+                      <span>Contact form: <b className={scan.has_contact_form ? "text-green-600" : "text-red-500"}>{scan.has_contact_form ? "Yes" : "No"}</b></span>
+                      <span>CTA strength: <b>{scan.cta_strength ?? "—"}</b></span>
+                      {scan.booking_method && <span>Booking method: <b>{scan.booking_method}</b></span>}
+                    </div>
+                  </div>
+                ) : selectedLead.scan_status === "pending" || selectedLead.scan_status === "scanning" ? (
+                  <p className="text-xs text-gray-400">Scan in progress — check back shortly.</p>
+                ) : selectedLead.scan_status === "failed" ? (
+                  <p className="text-xs text-amber-600">Scan failed — generic email template will be used.</p>
+                ) : (
+                  <p className="text-xs text-gray-400">No scan data yet.</p>
                 )}
               </div>
 
@@ -351,7 +427,7 @@ export default function LeadsPage() {
                   <Input label="Company size" value={editing.company_size ?? ""} onChange={(e) => setEditing({ ...editing, company_size: e.target.value })} />
                   <Select label="Status" value={editing.status ?? ""} onChange={(e) => setEditing({ ...editing, status: e.target.value })}>
                     {STATUS_OPTIONS.filter(Boolean).map((s) => (
-                      <option key={s} value={s}>{s.replace("_", " ")}</option>
+                      <option key={s} value={s}>{s.replace(/_/g, " ")}</option>
                     ))}
                   </Select>
                 </div>
@@ -373,6 +449,18 @@ export default function LeadsPage() {
                 <Button onClick={saveEditing} size="sm">Save changes</Button>
               </div>
 
+              {/* Followup timing */}
+              {(selectedLead.last_contacted_at || selectedLead.next_followup_at) && (
+                <div className="text-xs text-gray-500 space-y-1">
+                  {selectedLead.last_contacted_at && (
+                    <p>Last contacted: {new Date(selectedLead.last_contacted_at).toLocaleDateString()}</p>
+                  )}
+                  {selectedLead.next_followup_at && (
+                    <p>Next follow-up: {new Date(selectedLead.next_followup_at).toLocaleDateString()}</p>
+                  )}
+                </div>
+              )}
+
               {/* Messages */}
               {selectedLead.messages && selectedLead.messages.length > 0 && (
                 <div className="space-y-2">
@@ -384,7 +472,7 @@ export default function LeadsPage() {
                         <StatusBadge status={msg.status} />
                       </div>
                       <div className="flex gap-3 mt-1 text-xs text-gray-400">
-                        <span>{msg.type?.replace("_", " ")}</span>
+                        <span>{msg.type?.replace(/_/g, " ")}</span>
                         {msg.sent_at && <span>{new Date(msg.sent_at).toLocaleDateString()}</span>}
                       </div>
                     </div>

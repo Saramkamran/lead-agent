@@ -63,6 +63,25 @@ class ConversationResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class WebsiteScanResponse(BaseModel):
+    id: str
+    lead_id: str
+    business_type: Optional[str] = None
+    services_list: Optional[str] = None
+    has_pricing_page: Optional[bool] = None
+    has_booking_system: Optional[bool] = None
+    has_contact_form: Optional[bool] = None
+    cta_strength: Optional[str] = None
+    lead_capture_forms: Optional[bool] = None
+    design_quality: Optional[str] = None
+    booking_method: Optional[str] = None
+    detected_problem: Optional[str] = None
+    hook_text: Optional[str] = None
+    scanned_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
 class LeadResponse(BaseModel):
     id: str
     email: str
@@ -79,6 +98,10 @@ class LeadResponse(BaseModel):
     score_reason: Optional[str] = None
     custom_offer: Optional[str] = None
     outreach_account_id: Optional[str] = None
+    scan_status: Optional[str] = None
+    last_contacted_at: Optional[datetime] = None
+    next_followup_at: Optional[datetime] = None
+    reply_category: Optional[str] = None
     created_at: datetime
     messages: list[MessageResponse] = []
     conversations: list[ConversationResponse] = []
@@ -96,6 +119,10 @@ class LeadListResponse(BaseModel):
     score: Optional[int] = None
     status: str
     outreach_account_id: Optional[str] = None
+    scan_status: Optional[str] = None
+    last_contacted_at: Optional[datetime] = None
+    next_followup_at: Optional[datetime] = None
+    reply_category: Optional[str] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}

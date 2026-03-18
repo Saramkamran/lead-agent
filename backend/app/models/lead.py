@@ -9,6 +9,7 @@ from app.core.database import Base
 
 if TYPE_CHECKING:
     from app.models.outreach_account import OutreachAccount
+    from app.models.website_scan import WebsiteScan
 
 
 class Lead(Base):
@@ -31,6 +32,11 @@ class Lead(Base):
     outreach_account_id: Mapped[Optional[str]] = mapped_column(
         String, ForeignKey("outreach_accounts.id", ondelete="SET NULL"), nullable=True
     )
+    scan_status: Mapped[Optional[str]] = mapped_column(String(50), default="pending")
+    scan_retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_contacted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_followup_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    reply_category: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
@@ -43,4 +49,7 @@ class Lead(Base):
     )
     outreach_account: Mapped[Optional["OutreachAccount"]] = relationship(
         "OutreachAccount", back_populates="leads"
+    )
+    website_scan: Mapped[Optional["WebsiteScan"]] = relationship(
+        "WebsiteScan", back_populates="lead", uselist=False, cascade="all, delete-orphan"
     )

@@ -12,6 +12,7 @@ from app.core.database import get_db
 from app.models.lead import Lead
 from app.models.outreach_account import OutreachAccount
 from app.models.user import User
+from app.models.website_scan import WebsiteScan
 from app.schemas.lead import (
     AccountAssignmentItem,
     ImportResponse,
@@ -21,6 +22,7 @@ from app.schemas.lead import (
     LeadStatsResponse,
     LeadUpdate,
     PaginatedLeadsResponse,
+    WebsiteScanResponse,
 )
 
 router = APIRouter(prefix="/leads", tags=["leads"])
@@ -272,3 +274,42 @@ async def auto_assign_accounts(
 
     await db.flush()
     return {"assigned": assigned, "skipped": skipped}
+
+
+@router.get("/{lead_id}/scan", response_model=WebsiteScanResponse)
+async def get_lead_scan(
+    lead_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Return the website scan result for a lead."""
+    result = await db.execute(
+        select(WebsiteScan).where(WebsiteScan.lead_id == lead_id)
+    )
+    ws = result.scalar_one_or_none()
+    if not ws:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "No scan found for this lead", "code": "NOT_FOUND"},
+        )
+    return ws
+
+
+@router.post("/{lead_id}/scan")
+async def trigger_lead_scan(
+    lead_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Queue a (re-)scan for a lead's website."""
+    result = await db.execute(select(Lead).where(Lead.id == lead_id))
+    lead = result.scalar_one_or_none()
+    if not lead:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "Lead not found", "code": "NOT_FOUND"},
+        )
+    lead.scan_status = "pending"
+    lead.scan_retry_count = 0
+    await db.flush()
+    return {"status": "scan_queued"}

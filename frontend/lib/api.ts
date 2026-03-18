@@ -59,9 +59,30 @@ export interface Lead {
   score_reason?: string;
   custom_offer?: string;
   outreach_account_id?: string;
+  scan_status?: string;
+  last_contacted_at?: string;
+  next_followup_at?: string;
+  reply_category?: string;
   created_at: string;
   messages: Message[];
   conversations: Conversation[];
+}
+
+export interface WebsiteScan {
+  id: string;
+  lead_id: string;
+  business_type?: string;
+  services_list?: string;
+  has_pricing_page?: boolean;
+  has_booking_system?: boolean;
+  has_contact_form?: boolean;
+  cta_strength?: string;
+  lead_capture_forms?: boolean;
+  design_quality?: string;
+  booking_method?: string;
+  detected_problem?: string;
+  hook_text?: string;
+  scanned_at?: string;
 }
 
 export interface Message {
@@ -249,3 +270,9 @@ export const assignLeadAccounts = (assignments: Array<{ lead_id: string; outreac
 
 export const autoAssignAccounts = () =>
   apiFetch<{ assigned: number; skipped: number }>("/leads/auto-assign", { method: "POST" });
+
+export const getLeadScan = (id: string) =>
+  apiFetch<WebsiteScan>(`/leads/${id}/scan`);
+
+export const triggerLeadScan = (id: string) =>
+  apiFetch<{ status: string }>(`/leads/${id}/scan`, { method: "POST" });

@@ -12,15 +12,30 @@ from app.models.email_log import EmailLog
 from app.models.lead import Lead
 from app.services.conversation_service import classify_intent, generate_reply
 from app.services.email_service import send_email
+from app.services.scan_service import CALENDAR_LINK
 
 logger = logging.getLogger(__name__)
+
+_BOOKING_RESPONSE = """\
+Hey {first_name},
+
+Glad this caught your attention.
+
+The easiest next step is a quick 15-minute walkthrough — I'll show exactly how this would work for {company}.
+
+You can pick a time here:
+{calendar_link}
+
+Looking forward to it.
+
+Hassan"""
 
 
 async def handle_reply(reply_data: dict) -> None:
     """
     Called by the IMAP poller for every new unseen message.
     Matches the reply to a campaign thread via Message-ID headers,
-    classifies intent, and triggers an AI response.
+    classifies intent, and triggers the appropriate response.
     """
     from_email = reply_data.get("from_email", "").strip().lower()
     subject = reply_data.get("subject", "")
@@ -54,11 +69,13 @@ async def handle_reply(reply_data: dict) -> None:
                 lead_id = matched_log.lead_id
 
         if not lead_id:
-            # Fallback: match by sender email directly.
-            # This handles mail servers that replace Message-ID headers (e.g. cPanel relay).
+            # Fallback: match by sender email for mail servers that replace Message-IDs
             fallback_result = await db.execute(
                 select(Lead)
-                .where(Lead.email == from_email, Lead.status.in_(["contacted", "replied"]))
+                .where(
+                    Lead.email == from_email,
+                    Lead.status.in_(["contacted", "replied", "follow_up_1", "follow_up_2", "follow_up_3"]),
+                )
                 .limit(1)
             )
             fallback_lead = fallback_result.scalar_one_or_none()
@@ -93,16 +110,103 @@ async def handle_reply(reply_data: dict) -> None:
         db.add(inbound_log)
         await db.flush()
 
-        # Step 4: Classify intent
+        # Step 4: Classify intent (7 categories)
         intent = await classify_intent(body)
         logger.info("[REPLY] Intent for lead %s: %s", from_email, intent)
 
-        if intent == "negative":
-            lead.status = "not_interested"
+        # ── Negative / terminal categories ─────────────────────────────────
+        if intent in ("unsubscribe", "spam_complaint"):
+            lead.status = "disqualified"
+            lead.reply_category = intent
             await db.commit()
+            logger.info("[REPLY] Disqualified lead %s (%s)", from_email, intent)
             return
 
-        # Step 5: positive or neutral — find/create conversation
+        if intent == "not_interested":
+            lead.status = "not_interested"
+            lead.reply_category = intent
+            await db.commit()
+            logger.info("[REPLY] Lead %s marked not_interested", from_email)
+            return
+
+        if intent == "out_of_office":
+            lead.reply_category = "out_of_office"
+            # Do NOT change status — sequence will naturally pause while status stays as-is
+            await db.commit()
+            logger.info("[REPLY] OOO reply from %s — sequence paused", from_email)
+            return
+
+        if intent == "wrong_person":
+            lead.reply_category = "wrong_person"
+            lead.status = "replied"
+            await db.commit()
+            logger.info("[REPLY] Wrong-person reply from %s — flagged for manual review", from_email)
+            return
+
+        # ── Positive / conversational categories ───────────────────────────
+        lead.reply_category = intent
+        lead.status = "replied"
+
+        if intent == "interested":
+            # Auto-send booking response immediately — no AI generation needed
+            to_name = f"{lead.first_name or ''} {lead.last_name or ''}".strip() or lead.email
+            first_name = lead.first_name or "there"
+            company = lead.company or "your company"
+            booking_body = _BOOKING_RESPONSE.format(
+                first_name=first_name,
+                company=company,
+                calendar_link=CALENDAR_LINK,
+            )
+            reply_subject = (
+                f"Re: {subject}" if subject and not subject.lower().startswith("re:") else subject or "Following up"
+            )
+
+            # Build thread headers
+            all_logs_result = await db.execute(
+                select(EmailLog.message_id)
+                .where(EmailLog.lead_id == lead.id)
+                .order_by(EmailLog.created_at.asc())
+            )
+            prior_ids = [row[0] for row in all_logs_result.fetchall() if row[0]]
+            if message_id and message_id not in prior_ids:
+                prior_ids.append(message_id)
+            thread_references = " ".join(prior_ids) if prior_ids else None
+
+            smtp_kwargs: dict = {}
+            if lead.outreach_account_id:
+                from app.models.outreach_account import OutreachAccount
+                from app.jobs.scheduler import _get_account_smtp_kwargs
+                acc_result = await db.execute(
+                    select(OutreachAccount).where(OutreachAccount.id == lead.outreach_account_id)
+                )
+                acc = acc_result.scalar_one_or_none()
+                if acc:
+                    smtp_kwargs = _get_account_smtp_kwargs(acc)
+
+            sent_id = await send_email(
+                to_email=lead.email,
+                to_name=to_name,
+                subject=reply_subject,
+                body_html=booking_body,
+                reply_to_message_id=message_id,
+                thread_references=thread_references,
+                **smtp_kwargs,
+            )
+            db.add(EmailLog(
+                id=str(uuid.uuid4()),
+                lead_id=lead.id,
+                direction="outbound",
+                message_id=sent_id,
+                subject=reply_subject,
+                body=booking_body,
+                received_at=datetime.now(timezone.utc),
+            ))
+            await db.commit()
+            logger.info("[REPLY] Booking response sent to %s", from_email)
+            return
+
+        # intent == "question" — generate AI reply (existing logic)
+        # Step 5: find/create conversation
         conv_result = await db.execute(
             select(Conversation)
             .where(Conversation.lead_id == lead.id, Conversation.status.in_(["active", "manual"]))
@@ -163,21 +267,20 @@ async def handle_reply(reply_data: dict) -> None:
             return
 
         # Step 8: Build threading headers
-        # In-Reply-To = the lead's inbound message (the one we're directly replying to)
-        # References  = every Message-ID in the thread so far, in order
         all_logs_result = await db.execute(
             select(EmailLog.message_id)
             .where(EmailLog.lead_id == lead.id)
             .order_by(EmailLog.created_at.asc())
         )
         prior_message_ids = [row[0] for row in all_logs_result.fetchall() if row[0]]
-        # Append the inbound message if not already saved (flush happened above)
         if message_id and message_id not in prior_message_ids:
             prior_message_ids.append(message_id)
         thread_references = " ".join(prior_message_ids) if prior_message_ids else None
 
-        # Step 9: Send reply (use lead's outreach account creds if assigned)
-        reply_subject = f"Re: {subject}" if subject and not subject.lower().startswith("re:") else subject or "Following up"
+        # Step 9: Send AI reply (use lead's outreach account creds if assigned)
+        reply_subject = (
+            f"Re: {subject}" if subject and not subject.lower().startswith("re:") else subject or "Following up"
+        )
         to_name = f"{lead.first_name or ''} {lead.last_name or ''}".strip() or lead.email
 
         smtp_kwargs: dict = {}
@@ -196,7 +299,7 @@ async def handle_reply(reply_data: dict) -> None:
             to_name=to_name,
             subject=reply_subject,
             body_html=ai_reply,
-            reply_to_message_id=message_id,   # In-Reply-To = lead's message
+            reply_to_message_id=message_id,
             thread_references=thread_references,
             **smtp_kwargs,
         )
@@ -212,6 +315,5 @@ async def handle_reply(reply_data: dict) -> None:
             received_at=datetime.now(timezone.utc),
         ))
 
-        lead.status = "replied"
         await db.commit()
         logger.info("[REPLY] AI reply sent for lead %s", from_email)

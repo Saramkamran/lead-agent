@@ -18,33 +18,51 @@ def _get_client() -> AsyncOpenAI:
     return _client
 
 
+_VALID_INTENTS = frozenset([
+    "interested", "question", "not_interested", "unsubscribe",
+    "out_of_office", "wrong_person", "spam_complaint",
+])
+
+
 async def classify_intent(reply_text: str) -> str:
     """
-    Returns 'positive', 'neutral', or 'negative'.
+    Returns one of: interested | question | not_interested | unsubscribe |
+    out_of_office | wrong_person | spam_complaint.
+    Falls back to 'question' on error or unrecognised output.
     """
     try:
         client = _get_client()
         response = await client.chat.completions.create(
             model="gpt-4o-mini",
-            max_tokens=5,
+            max_tokens=10,
             messages=[
                 {
                     "role": "user",
                     "content": (
-                        "Classify this email reply as exactly one word: positive, neutral, or negative.\n"
+                        "Classify this email reply as exactly one of these categories:\n"
+                        "interested, question, not_interested, unsubscribe, out_of_office, wrong_person, spam_complaint\n\n"
+                        "Rules:\n"
+                        "- interested: wants to learn more, wants to meet, positive curiosity\n"
+                        "- question: asking how it works, what it costs, follow-up questions\n"
+                        "- not_interested: no thanks, not for us, not relevant\n"
+                        "- unsubscribe: remove me, stop, unsubscribe, don't contact me\n"
+                        "- out_of_office: auto-reply or OOO message\n"
+                        "- wrong_person: I don't handle this, wrong contact\n"
+                        "- spam_complaint: this is spam\n\n"
+                        "Respond with exactly one word from the list.\n"
                         f"Reply: {reply_text}"
                     ),
                 }
             ],
         )
         result = response.choices[0].message.content.strip().lower()
-        if result not in ("positive", "neutral", "negative"):
-            result = "neutral"
+        if result not in _VALID_INTENTS:
+            result = "question"
         logger.info("Intent classified as: %s", result)
         return result
     except Exception as e:
         logger.error("Failed to classify intent: %s", e)
-        return "neutral"
+        return "question"
 
 
 async def generate_reply(conversation, lead, campaign) -> str:

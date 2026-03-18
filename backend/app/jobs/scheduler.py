@@ -24,13 +24,70 @@ logger = logging.getLogger(__name__)
 
 _scheduler: AsyncIOScheduler | None = None
 
+# Statuses that mean a lead's sequence should not continue
+_STOP_STATUSES = frozenset(["replied", "booked", "not_interested", "disqualified", "follow_up_3"])
+
+
+def _is_weekday() -> bool:
+    """Return True if today is Monday–Friday (weekday() 0–4)."""
+    return datetime.now(timezone.utc).weekday() < 5
+
+
+async def job_scan_leads() -> None:
+    """Scan websites for newly imported leads. Runs every 5 minutes."""
+    from app.services.scan_service import scan_website
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(Lead)
+            .where(Lead.status == "imported", Lead.scan_status == "pending")
+            .limit(5)
+        )
+        leads = list(result.scalars().all())
+
+        if not leads:
+            return
+
+        scanned = 0
+        for lead in leads:
+            try:
+                lead.scan_status = "scanning"
+                await db.flush()
+
+                ws = await scan_website(lead, db)
+
+                if ws:
+                    lead.scan_status = "success"
+                    scanned += 1
+                elif lead.scan_retry_count == 0:
+                    # Retry once on next run
+                    lead.scan_retry_count = 1
+                    lead.scan_status = "pending"
+                    logger.info("[SCAN JOB] Queuing retry for lead %s", lead.email)
+                else:
+                    # Second failure — mark failed, generic email will be used
+                    lead.scan_status = "failed"
+                    scanned += 1
+                    logger.warning("[SCAN JOB] Scan failed for lead %s — will use generic template", lead.email)
+
+            except Exception as e:
+                logger.error("[SCAN JOB] Error scanning lead %s: %s", lead.email, e)
+                lead.scan_status = "failed"
+
+        await db.commit()
+        logger.info("[SCAN JOB] Processed %d lead(s) at %s", scanned, datetime.now(timezone.utc).isoformat())
+
 
 async def job_score_new_leads() -> None:
     """Score leads with status='imported' and no score. Runs every 10 minutes."""
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             select(Lead)
-            .where(Lead.status == "imported", Lead.score.is_(None))
+            .where(
+                Lead.status == "imported",
+                Lead.score.is_(None),
+                Lead.scan_status.notin_(["pending", "scanning"]),
+            )
             .limit(50)
         )
         leads = list(result.scalars().all())
@@ -106,7 +163,11 @@ async def _resolve_send_account(lead: Lead, db: AsyncSession) -> OutreachAccount
 
 
 async def job_send_daily_outreach() -> int:
-    """Send cold emails to scored leads. Runs daily at 9:00 AM."""
+    """Send cold emails to scored leads. Runs daily at 9:00 AM (weekdays only)."""
+    if not _is_weekday():
+        logger.info("[OUTREACH JOB] Skipping — weekend")
+        return 0
+
     async with AsyncSessionLocal() as db:
         campaigns_result = await db.execute(
             select(Campaign).where(Campaign.status == "active")
@@ -142,6 +203,8 @@ async def job_send_daily_outreach() -> int:
                 .where(
                     Lead.status == "scored",
                     Lead.score >= campaign.min_score,
+                    # Don't send before scan has been attempted
+                    Lead.scan_status.in_(["success", "failed", None]),
                 )
                 .limit(remaining)
             )
@@ -193,6 +256,8 @@ async def job_send_daily_outreach() -> int:
                             received_at=datetime.now(timezone.utc),
                         ))
                         lead.status = "contacted"
+                        lead.last_contacted_at = datetime.now(timezone.utc)
+                        lead.next_followup_at = datetime.now(timezone.utc) + timedelta(days=2)
                         if account:
                             account.leads_assigned += 1
                         sent += 1
@@ -221,10 +286,17 @@ async def job_send_daily_outreach() -> int:
 
 
 async def job_send_followups() -> None:
-    """Send followup emails to contacted leads. Runs daily at 9:30 AM."""
+    """Send followup emails (1, 2, 3) to contacted leads. Runs daily at 9:30 AM (weekdays only)."""
+    if not _is_weekday():
+        logger.info("[FOLLOWUP JOB] Skipping — weekend")
+        return
+
     async with AsyncSessionLocal() as db:
+        # Find all leads that are in the outreach sequence and not stopped
         leads_result = await db.execute(
-            select(Lead).where(Lead.status == "contacted")
+            select(Lead).where(
+                Lead.status.in_(["contacted", "follow_up_1", "follow_up_2"]),
+            )
         )
         leads = list(leads_result.scalars().all())
 
@@ -235,6 +307,9 @@ async def job_send_followups() -> None:
         sent = 0
 
         for lead in leads:
+            if lead.status in _STOP_STATUSES:
+                continue
+
             try:
                 msgs_result = await db.execute(
                     select(Message).where(Message.lead_id == lead.id)
@@ -244,6 +319,7 @@ async def job_send_followups() -> None:
                 cold_email = next((m for m in messages if m.type == "cold_email"), None)
                 followup_1 = next((m for m in messages if m.type == "followup_1"), None)
                 followup_2 = next((m for m in messages if m.type == "followup_2"), None)
+                followup_3 = next((m for m in messages if m.type == "followup_3"), None)
 
                 log_result = await db.execute(
                     select(EmailLog)
@@ -263,16 +339,22 @@ async def job_send_followups() -> None:
                     account = acc_result.scalar_one_or_none()
                 smtp_kwargs = _get_account_smtp_kwargs(account)
 
+                to_name = f"{lead.first_name or ''} {lead.last_name or ''}".strip() or lead.email
+
+                # Determine the reference time for each followup
+                cold_sent_at = cold_email.sent_at if cold_email else lead.last_contacted_at
+                f1_sent_at = followup_1.sent_at if followup_1 else None
+                f2_sent_at = followup_2.sent_at if followup_2 else None
+
+                # followup_1: Day 2 after cold email
                 if (
-                    cold_email
-                    and cold_email.sent_at
-                    and cold_email.sent_at <= now - timedelta(days=3)
+                    cold_sent_at
+                    and cold_sent_at <= now - timedelta(days=2)
                     and followup_1
                     and followup_1.status == "pending"
                 ):
                     message_id = await send_email(
-                        to_email=lead.email,
-                        to_name=f"{lead.first_name or ''} {lead.last_name or ''}".strip() or lead.email,
+                        to_email=lead.email, to_name=to_name,
                         subject=followup_1.subject or "",
                         body_html=followup_1.body or "",
                         reply_to_message_id=reply_to_mid,
@@ -282,26 +364,24 @@ async def job_send_followups() -> None:
                     followup_1.sent_at = now
                     if message_id:
                         db.add(EmailLog(
-                            id=str(uuid.uuid4()),
-                            lead_id=lead.id,
-                            direction="outbound",
-                            message_id=message_id,
-                            subject=followup_1.subject,
-                            body=followup_1.body,
-                            received_at=now,
+                            id=str(uuid.uuid4()), lead_id=lead.id,
+                            direction="outbound", message_id=message_id,
+                            subject=followup_1.subject, body=followup_1.body, received_at=now,
                         ))
+                        lead.status = "follow_up_1"
+                        lead.last_contacted_at = now
+                        lead.next_followup_at = now + timedelta(days=3)
                         sent += 1
 
+                # followup_2: Day 5 (3 days after followup_1)
                 elif (
-                    followup_1
-                    and followup_1.sent_at
-                    and followup_1.sent_at <= now - timedelta(days=7)
+                    f1_sent_at
+                    and f1_sent_at <= now - timedelta(days=3)
                     and followup_2
                     and followup_2.status == "pending"
                 ):
                     message_id = await send_email(
-                        to_email=lead.email,
-                        to_name=f"{lead.first_name or ''} {lead.last_name or ''}".strip() or lead.email,
+                        to_email=lead.email, to_name=to_name,
                         subject=followup_2.subject or "",
                         body_html=followup_2.body or "",
                         reply_to_message_id=reply_to_mid,
@@ -311,14 +391,40 @@ async def job_send_followups() -> None:
                     followup_2.sent_at = now
                     if message_id:
                         db.add(EmailLog(
-                            id=str(uuid.uuid4()),
-                            lead_id=lead.id,
-                            direction="outbound",
-                            message_id=message_id,
-                            subject=followup_2.subject,
-                            body=followup_2.body,
-                            received_at=now,
+                            id=str(uuid.uuid4()), lead_id=lead.id,
+                            direction="outbound", message_id=message_id,
+                            subject=followup_2.subject, body=followup_2.body, received_at=now,
                         ))
+                        lead.status = "follow_up_2"
+                        lead.last_contacted_at = now
+                        lead.next_followup_at = now + timedelta(days=4)
+                        sent += 1
+
+                # followup_3 (breakup): Day 9 (4 days after followup_2)
+                elif (
+                    f2_sent_at
+                    and f2_sent_at <= now - timedelta(days=4)
+                    and followup_3
+                    and followup_3.status == "pending"
+                ):
+                    message_id = await send_email(
+                        to_email=lead.email, to_name=to_name,
+                        subject=followup_3.subject or "",
+                        body_html=followup_3.body or "",
+                        reply_to_message_id=reply_to_mid,
+                        **smtp_kwargs,
+                    )
+                    followup_3.status = "sent" if message_id else "failed"
+                    followup_3.sent_at = now
+                    if message_id:
+                        db.add(EmailLog(
+                            id=str(uuid.uuid4()), lead_id=lead.id,
+                            direction="outbound", message_id=message_id,
+                            subject=followup_3.subject, body=followup_3.body, received_at=now,
+                        ))
+                        lead.status = "follow_up_3"
+                        lead.last_contacted_at = now
+                        lead.next_followup_at = None
                         sent += 1
 
             except Exception as e:
@@ -339,6 +445,13 @@ async def job_reset_daily_limits() -> None:
 async def start_scheduler() -> None:
     global _scheduler
     _scheduler = AsyncIOScheduler()
+
+    _scheduler.add_job(
+        job_scan_leads,
+        trigger=IntervalTrigger(minutes=5),
+        id="scan_leads",
+        replace_existing=True,
+    )
 
     _scheduler.add_job(
         job_score_new_leads,

@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     APP_SECRET_KEY: str = ""
 
     OPENAI_API_KEY: str = ""
+    ANTHROPIC_API_KEY: str = ""
 
     SMTP_HOST: str = "smtp.gmail.com"
     SMTP_PORT: int = 587
