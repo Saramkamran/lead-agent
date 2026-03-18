@@ -247,7 +247,11 @@ export interface OutreachAccountUpdate {
   display_name?: string;
   daily_limit?: number;
   is_active?: boolean;
+  smtp_host?: string;
+  smtp_port?: number;
   smtp_pass?: string;
+  imap_host?: string;
+  imap_port?: number;
 }
 
 export const getOutreachAccounts = () =>

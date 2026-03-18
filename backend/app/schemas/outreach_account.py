@@ -21,7 +21,11 @@ class OutreachAccountUpdate(BaseModel):
     display_name: Optional[str] = None
     daily_limit: Optional[int] = None
     is_active: Optional[bool] = None
+    smtp_host: Optional[str] = None
+    smtp_port: Optional[int] = None
     smtp_pass: Optional[str] = None
+    imap_host: Optional[str] = None
+    imap_port: Optional[int] = None
 
 
 class OutreachAccountOut(BaseModel):

@@ -103,6 +103,10 @@ export default function OutreachAccountsPage() {
           display_name: form.display_name,
           daily_limit: form.daily_limit,
           is_active: form.is_active,
+          smtp_host: form.smtp_host,
+          smtp_port: form.smtp_port,
+          imap_host: form.imap_host,
+          imap_port: form.imap_port,
         };
         if (form.smtp_pass) update.smtp_pass = form.smtp_pass;
         await updateOutreachAccount(editingId, update);
