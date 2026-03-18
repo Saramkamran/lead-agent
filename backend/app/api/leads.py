@@ -3,16 +3,19 @@ import io
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.auth import get_current_user
 from app.core.database import get_db
 from app.models.lead import Lead
+from app.models.outreach_account import OutreachAccount
 from app.models.user import User
 from app.schemas.lead import (
+    AccountAssignmentItem,
     ImportResponse,
+    LeadAccountAssignment,
     LeadListResponse,
     LeadResponse,
     LeadStatsResponse,
@@ -203,3 +206,69 @@ async def delete_lead(
         )
     await db.delete(lead)
     await db.flush()
+
+
+@router.post("/assign-accounts")
+async def assign_accounts(
+    body: LeadAccountAssignment,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Bulk assign outreach accounts to specific leads."""
+    assigned = 0
+    for item in body.assignments:
+        result = await db.execute(select(Lead).where(Lead.id == item.lead_id))
+        lead = result.scalar_one_or_none()
+        if lead:
+            lead.outreach_account_id = item.outreach_account_id
+            assigned += 1
+    await db.flush()
+    return {"assigned": assigned}
+
+
+@router.post("/auto-assign")
+async def auto_assign_accounts(
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Round-robin distribute unassigned leads across active accounts respecting daily_limit."""
+    # Load active accounts that still have capacity
+    accounts_result = await db.execute(
+        select(OutreachAccount)
+        .where(OutreachAccount.is_active.is_(True))
+        .order_by(OutreachAccount.created_at)
+    )
+    accounts = [a for a in accounts_result.scalars().all() if a.leads_assigned < a.daily_limit]
+
+    if not accounts:
+        return {"assigned": 0, "skipped": 0}
+
+    # Load unassigned scored leads
+    leads_result = await db.execute(
+        select(Lead).where(Lead.outreach_account_id.is_(None), Lead.status != "not_interested")
+    )
+    leads = list(leads_result.scalars().all())
+
+    assigned = 0
+    skipped = 0
+    account_idx = 0
+
+    for lead in leads:
+        # Advance to next account with remaining capacity
+        while account_idx < len(accounts) and accounts[account_idx].leads_assigned >= accounts[account_idx].daily_limit:
+            account_idx += 1
+
+        if account_idx >= len(accounts):
+            skipped += 1
+            continue
+
+        acc = accounts[account_idx]
+        lead.outreach_account_id = acc.id
+        acc.leads_assigned += 1
+        assigned += 1
+
+        # Move to next account (round-robin)
+        account_idx = (account_idx + 1) % len(accounts)
+
+    await db.flush()
+    return {"assigned": assigned, "skipped": skipped}

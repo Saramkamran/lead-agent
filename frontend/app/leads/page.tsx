@@ -1,13 +1,26 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getLeads, getLead, updateLead, deleteLead, importLeads, triggerScoreJob, Lead, Message, Conversation } from "@/lib/api";
+import {
+  getLeads,
+  getLead,
+  updateLead,
+  deleteLead,
+  importLeads,
+  triggerScoreJob,
+  getOutreachAccounts,
+  autoAssignAccounts,
+  Lead,
+  Message,
+  Conversation,
+  OutreachAccount,
+} from "@/lib/api";
 import { AppShell } from "@/components/layout/app-shell";
 import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { ScoreBadge, StatusBadge } from "@/components/ui/badge";
-import { Upload, X, ChevronRight, Trash2, Zap } from "lucide-react";
+import { Upload, X, Trash2, Zap, UserPlus } from "lucide-react";
 
 const STATUS_OPTIONS = ["", "imported", "scored", "contacted", "replied", "booked", "not_interested", "bounced"];
 
@@ -19,12 +32,17 @@ export default function LeadsPage() {
   const [statusFilter, setStatusFilter] = useState("");
   const [loading, setLoading] = useState(true);
 
+  const [accounts, setAccounts] = useState<OutreachAccount[]>([]);
+
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [slideOpen, setSlideOpen] = useState(false);
   const [editing, setEditing] = useState<Partial<Lead>>({});
 
   const [scoring, setScoring] = useState(false);
   const [scoredCount, setScoredCount] = useState<number | null>(null);
+
+  const [autoAssigning, setAutoAssigning] = useState(false);
+  const [autoAssignResult, setAutoAssignResult] = useState<string | null>(null);
 
   const [importOpen, setImportOpen] = useState(false);
   const [importFile, setImportFile] = useState<File | null>(null);
@@ -52,6 +70,10 @@ export default function LeadsPage() {
 
   useEffect(() => { fetchLeads(); }, [fetchLeads]);
 
+  useEffect(() => {
+    getOutreachAccounts().then(setAccounts).catch(console.error);
+  }, []);
+
   const filteredLeads = search
     ? leads.filter((l) =>
         [l.email, l.first_name, l.last_name, l.company, l.title]
@@ -60,6 +82,12 @@ export default function LeadsPage() {
           .includes(search.toLowerCase())
       )
     : leads;
+
+  function accountLabel(id?: string) {
+    if (!id) return "—";
+    const acc = accounts.find((a) => a.id === id);
+    return acc ? acc.from_email : "—";
+  }
 
   async function openLead(id: string) {
     const lead = await getLead(id);
@@ -73,6 +101,7 @@ export default function LeadsPage() {
       industry: lead.industry,
       company_size: lead.company_size,
       status: lead.status,
+      outreach_account_id: lead.outreach_account_id ?? "",
     });
     setSlideOpen(true);
   }
@@ -80,7 +109,9 @@ export default function LeadsPage() {
   async function saveEditing() {
     if (!selectedLead) return;
     try {
-      const updated = await updateLead(selectedLead.id, editing);
+      const payload = { ...editing };
+      if (payload.outreach_account_id === "") payload.outreach_account_id = undefined;
+      const updated = await updateLead(selectedLead.id, payload);
       setSelectedLead(updated);
       fetchLeads();
     } catch (e) {
@@ -132,6 +163,25 @@ export default function LeadsPage() {
     }
   }
 
+  async function handleAutoAssign() {
+    setAutoAssigning(true);
+    setAutoAssignResult(null);
+    try {
+      const result = await autoAssignAccounts();
+      setAutoAssignResult(
+        result.assigned > 0
+          ? `${result.assigned} lead${result.assigned === 1 ? "" : "s"} assigned`
+          : "No leads assigned — check that active accounts have remaining capacity"
+      );
+      fetchLeads();
+      setTimeout(() => setAutoAssignResult(null), 5000);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setAutoAssigning(false);
+    }
+  }
+
   const totalPages = Math.ceil(total / PAGE_SIZE);
 
   return (
@@ -140,10 +190,19 @@ export default function LeadsPage() {
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <h1 className="text-2xl font-bold text-gray-900">Leads</h1>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap justify-end">
             {scoredCount !== null && (
               <span className="text-sm text-green-600 font-medium">Scoring complete — leads updated</span>
             )}
+            {autoAssignResult && (
+              <span className={`text-sm font-medium ${autoAssignResult.startsWith("No") ? "text-amber-600" : "text-green-600"}`}>
+                {autoAssignResult}
+              </span>
+            )}
+            <Button variant="secondary" onClick={handleAutoAssign} disabled={autoAssigning}>
+              <UserPlus size={16} />
+              {autoAssigning ? "Assigning…" : "Auto-Assign Accounts"}
+            </Button>
             <Button variant="secondary" onClick={handleScoreNow} disabled={scoring}>
               <Zap size={16} />
               {scoring ? "Scoring…" : "Score Now"}
@@ -185,15 +244,16 @@ export default function LeadsPage() {
                 <th className="px-4 py-3 font-medium text-gray-600">Title</th>
                 <th className="px-4 py-3 font-medium text-gray-600">Score</th>
                 <th className="px-4 py-3 font-medium text-gray-600">Status</th>
+                <th className="px-4 py-3 font-medium text-gray-600">Account</th>
                 <th className="px-4 py-3 font-medium text-gray-600">Added</th>
                 <th className="px-4 py-3" />
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={8} className="px-4 py-8 text-center text-gray-400">Loading…</td></tr>
+                <tr><td colSpan={9} className="px-4 py-8 text-center text-gray-400">Loading…</td></tr>
               ) : filteredLeads.length === 0 ? (
-                <tr><td colSpan={8} className="px-4 py-8 text-center text-gray-400">No leads found.</td></tr>
+                <tr><td colSpan={9} className="px-4 py-8 text-center text-gray-400">No leads found.</td></tr>
               ) : (
                 filteredLeads.map((lead) => (
                   <tr
@@ -209,6 +269,7 @@ export default function LeadsPage() {
                     <td className="px-4 py-3 text-gray-600">{lead.title ?? "—"}</td>
                     <td className="px-4 py-3"><ScoreBadge score={lead.score} /></td>
                     <td className="px-4 py-3"><StatusBadge status={lead.status!} /></td>
+                    <td className="px-4 py-3 text-gray-500 text-xs">{accountLabel(lead.outreach_account_id)}</td>
                     <td className="px-4 py-3 text-gray-500">
                       {lead.created_at ? new Date(lead.created_at).toLocaleDateString() : "—"}
                     </td>
@@ -294,6 +355,21 @@ export default function LeadsPage() {
                     ))}
                   </Select>
                 </div>
+
+                {/* Outreach Account dropdown */}
+                <Select
+                  label="Outreach Account"
+                  value={editing.outreach_account_id ?? ""}
+                  onChange={(e) => setEditing({ ...editing, outreach_account_id: e.target.value })}
+                >
+                  <option value="">Unassigned</option>
+                  {accounts.map((acc) => (
+                    <option key={acc.id} value={acc.id}>
+                      {acc.display_name} ({acc.from_email})
+                    </option>
+                  ))}
+                </Select>
+
                 <Button onClick={saveEditing} size="sm">Save changes</Button>
               </div>
 

@@ -3,13 +3,14 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect } from "react";
-import { BarChart2, MessageSquare, Megaphone, Users, LogOut } from "lucide-react";
+import { BarChart2, Mail, MessageSquare, Megaphone, Users, LogOut } from "lucide-react";
 
 const NAV = [
   { href: "/dashboard", label: "Dashboard", icon: BarChart2 },
   { href: "/leads", label: "Leads", icon: Users },
   { href: "/campaigns", label: "Campaigns", icon: Megaphone },
   { href: "/conversations", label: "Conversations", icon: MessageSquare },
+  { href: "/outreach-accounts", label: "Email Accounts", icon: Mail },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {

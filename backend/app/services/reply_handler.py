@@ -176,9 +176,20 @@ async def handle_reply(reply_data: dict) -> None:
             prior_message_ids.append(message_id)
         thread_references = " ".join(prior_message_ids) if prior_message_ids else None
 
-        # Step 9: Send reply
+        # Step 9: Send reply (use lead's outreach account creds if assigned)
         reply_subject = f"Re: {subject}" if subject and not subject.lower().startswith("re:") else subject or "Following up"
         to_name = f"{lead.first_name or ''} {lead.last_name or ''}".strip() or lead.email
+
+        smtp_kwargs: dict = {}
+        if lead.outreach_account_id:
+            from app.models.outreach_account import OutreachAccount
+            from app.jobs.scheduler import _get_account_smtp_kwargs
+            acc_result = await db.execute(
+                select(OutreachAccount).where(OutreachAccount.id == lead.outreach_account_id)
+            )
+            acc = acc_result.scalar_one_or_none()
+            if acc:
+                smtp_kwargs = _get_account_smtp_kwargs(acc)
 
         sent_message_id = await send_email(
             to_email=lead.email,
@@ -187,6 +198,7 @@ async def handle_reply(reply_data: dict) -> None:
             body_html=ai_reply,
             reply_to_message_id=message_id,   # In-Reply-To = lead's message
             thread_references=thread_references,
+            **smtp_kwargs,
         )
 
         # Step 10: Save outbound AI reply to email_logs

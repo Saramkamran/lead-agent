@@ -7,9 +7,11 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import auth, campaigns, conversations, health, jobs, leads
+from app.api import auth, campaigns, conversations, health, jobs, leads, outreach_accounts
+from app.core.config import settings
+from app.core.database import AsyncSessionLocal
 from app.jobs.scheduler import start_scheduler, stop_scheduler
-from app.services.email_service import poll_imap_replies
+from app.services.email_service import poll_imap_account
 from app.services.reply_handler import handle_reply
 
 logging.basicConfig(
@@ -21,9 +23,73 @@ logger = logging.getLogger(__name__)
 _imap_task: asyncio.Task | None = None
 
 
+async def _poll_all_imap_sources() -> None:
+    """
+    Long-running loop that polls the global IMAP account plus all active outreach accounts.
+    Runs on every IMAP_POLL_INTERVAL_SECONDS tick.
+    """
+    from sqlalchemy import select
+    from app.models.outreach_account import OutreachAccount
+    from app.core.crypto import decrypt_secret
+
+    logger.info("[IMAP] Multi-account polling loop started (interval: %ds)", settings.IMAP_POLL_INTERVAL_SECONDS)
+
+    while True:
+        tasks = []
+
+        # Global IMAP account (env vars)
+        if settings.IMAP_USER and settings.IMAP_PASS:
+            tasks.append(poll_imap_account(
+                creds={
+                    "host": settings.IMAP_HOST,
+                    "port": settings.IMAP_PORT,
+                    "user": settings.IMAP_USER,
+                    "pass": settings.IMAP_PASS,
+                    "folder": settings.IMAP_REPLY_FOLDER,
+                },
+                handle_reply_callback=handle_reply,
+            ))
+
+        # Per-account IMAP (from DB)
+        try:
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(
+                    select(OutreachAccount).where(OutreachAccount.is_active.is_(True))
+                )
+                accounts = list(result.scalars().all())
+
+            for account in accounts:
+                try:
+                    plain_pass = decrypt_secret(account.smtp_pass)
+                except Exception:
+                    continue
+
+                # Skip if this account's IMAP is same as global (avoid duplicate processing)
+                if account.imap_host == settings.IMAP_HOST and account.smtp_user == settings.IMAP_USER:
+                    continue
+
+                tasks.append(poll_imap_account(
+                    creds={
+                        "host": account.imap_host,
+                        "port": account.imap_port,
+                        "user": account.smtp_user,
+                        "pass": plain_pass,
+                        "folder": settings.IMAP_REPLY_FOLDER,
+                    },
+                    handle_reply_callback=handle_reply,
+                ))
+        except Exception as e:
+            logger.error("[IMAP] Failed to load outreach accounts for polling: %s", e)
+
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        await asyncio.sleep(settings.IMAP_POLL_INTERVAL_SECONDS)
+
+
 async def start_imap_poller() -> None:
     global _imap_task
-    _imap_task = asyncio.create_task(poll_imap_replies(handle_reply))
+    _imap_task = asyncio.create_task(_poll_all_imap_sources())
     logger.info("[IMAP] Poller task created")
 
 
@@ -92,6 +158,7 @@ def create_app() -> FastAPI:
     app.include_router(campaigns.router)
     app.include_router(conversations.router)
     app.include_router(jobs.router)
+    app.include_router(outreach_accounts.router)
 
     return app
 

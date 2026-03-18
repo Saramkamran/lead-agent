@@ -6,6 +6,8 @@ class Settings(BaseSettings):
     JWT_SECRET: str
     JWT_EXPIRE_HOURS: int = 8
 
+    APP_SECRET_KEY: str = ""
+
     OPENAI_API_KEY: str = ""
 
     SMTP_HOST: str = "smtp.gmail.com"

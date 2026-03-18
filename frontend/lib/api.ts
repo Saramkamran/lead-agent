@@ -58,6 +58,7 @@ export interface Lead {
   score?: number;
   score_reason?: string;
   custom_offer?: string;
+  outreach_account_id?: string;
   created_at: string;
   messages: Message[];
   conversations: Conversation[];
@@ -190,3 +191,61 @@ export const triggerScoreJob = () =>
 
 export const triggerOutreachJob = () =>
   apiFetch<{ ok: boolean; job: string; sent: number }>("/jobs/outreach", { method: "POST" });
+
+// ── Outreach Accounts ─────────────────────────────────────────────────────────
+export interface OutreachAccount {
+  id: string;
+  display_name: string;
+  from_name: string;
+  from_email: string;
+  smtp_host: string;
+  smtp_port: number;
+  smtp_user: string;
+  imap_host: string;
+  imap_port: number;
+  daily_limit: number;
+  leads_assigned: number;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface OutreachAccountCreate {
+  display_name: string;
+  smtp_host: string;
+  smtp_port: number;
+  smtp_user: string;
+  smtp_pass: string;
+  imap_host: string;
+  imap_port: number;
+  from_name: string;
+  from_email: string;
+  daily_limit: number;
+}
+
+export interface OutreachAccountUpdate {
+  display_name?: string;
+  daily_limit?: number;
+  is_active?: boolean;
+  smtp_pass?: string;
+}
+
+export const getOutreachAccounts = () =>
+  apiFetch<OutreachAccount[]>("/outreach-accounts");
+
+export const createOutreachAccount = (data: OutreachAccountCreate) =>
+  apiFetch<OutreachAccount>("/outreach-accounts", { method: "POST", body: JSON.stringify(data) });
+
+export const updateOutreachAccount = (id: string, data: OutreachAccountUpdate) =>
+  apiFetch<OutreachAccount>(`/outreach-accounts/${id}`, { method: "PATCH", body: JSON.stringify(data) });
+
+export const deleteOutreachAccount = (id: string) =>
+  apiFetch<void>(`/outreach-accounts/${id}`, { method: "DELETE" });
+
+export const testOutreachAccountConnection = (id: string) =>
+  apiFetch<{ smtp: string; imap: string; error?: string }>(`/outreach-accounts/${id}/test-connection`, { method: "POST" });
+
+export const assignLeadAccounts = (assignments: Array<{ lead_id: string; outreach_account_id: string }>) =>
+  apiFetch<{ assigned: number }>("/leads/assign-accounts", { method: "POST", body: JSON.stringify({ assignments }) });
+
+export const autoAssignAccounts = () =>
+  apiFetch<{ assigned: number; skipped: number }>("/leads/auto-assign", { method: "POST" });

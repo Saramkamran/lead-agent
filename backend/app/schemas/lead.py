@@ -34,6 +34,7 @@ class LeadUpdate(BaseModel):
     score: Optional[int] = None
     score_reason: Optional[str] = None
     custom_offer: Optional[str] = None
+    outreach_account_id: Optional[str] = None
 
 
 class MessageResponse(BaseModel):
@@ -77,6 +78,7 @@ class LeadResponse(BaseModel):
     score: Optional[int] = None
     score_reason: Optional[str] = None
     custom_offer: Optional[str] = None
+    outreach_account_id: Optional[str] = None
     created_at: datetime
     messages: list[MessageResponse] = []
     conversations: list[ConversationResponse] = []
@@ -93,9 +95,19 @@ class LeadListResponse(BaseModel):
     title: Optional[str] = None
     score: Optional[int] = None
     status: str
+    outreach_account_id: Optional[str] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class AccountAssignmentItem(BaseModel):
+    lead_id: str
+    outreach_account_id: str
+
+
+class LeadAccountAssignment(BaseModel):
+    assignments: list[AccountAssignmentItem]
 
 
 class ImportResponse(BaseModel):
