@@ -52,7 +52,43 @@ async def import_leads(
     except UnicodeDecodeError:
         text = content.decode("latin-1")
 
-    reader = csv.DictReader(io.StringIO(text))
+    raw_reader = csv.DictReader(io.StringIO(text))
+
+    # Normalise headers: lowercase + strip, then remap common aliases
+    _ALIASES: dict[str, str] = {
+        # email
+        "e-mail": "email", "e_mail": "email", "email address": "email",
+        # name
+        "contact name": "full_name", "name": "full_name",
+        "contact": "full_name", "full name": "full_name",
+        "firstname": "first_name", "first": "first_name",
+        "lastname": "last_name", "last": "last_name", "surname": "last_name",
+        # company
+        "organization": "company", "organisation": "company", "account": "company",
+        # website / domain
+        "domain": "website", "url": "website", "web": "website",
+        "website url": "website", "domain name": "website",
+        # size
+        "employee count": "company_size", "employees": "company_size",
+        "num employees": "company_size", "# employees": "company_size",
+        "headcount": "company_size", "company size": "company_size",
+        # industry
+        "sector": "industry", "vertical": "industry",
+    }
+
+    def _norm(row: dict) -> dict:
+        out: dict = {}
+        for k, v in row.items():
+            key = k.strip().lower()
+            key = _ALIASES.get(key, key)
+            out[key] = v
+        # Split "full_name" into first/last if dedicated columns absent
+        if "full_name" in out and "first_name" not in out:
+            parts = out.pop("full_name", "").strip().split(None, 1)
+            out["first_name"] = parts[0] if parts else ""
+            out["last_name"] = parts[1] if len(parts) > 1 else ""
+        return out
+
     imported = 0
     skipped = 0
     errors = []
@@ -60,7 +96,8 @@ async def import_leads(
     rows_to_insert = []
     seen_emails = set()
 
-    for i, row in enumerate(reader, start=2):  # start=2 because row 1 is header
+    for i, raw_row in enumerate(raw_reader, start=2):  # start=2 because row 1 is header
+        row = _norm(raw_row)
         email = row.get("email", "").strip().lower()
         if not email:
             errors.append(f"Row {i}: missing email")
@@ -274,6 +311,60 @@ async def auto_assign_accounts(
 
     await db.flush()
     return {"assigned": assigned, "skipped": skipped}
+
+
+@router.post("/{lead_id}/process", response_model=LeadResponse)
+async def process_lead(
+    lead_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Run full pipeline for one lead: scan → score → offer → generate messages."""
+    from app.services.scan_service import scan_website
+    from app.services.scoring_service import score_lead
+    from app.services.offer_service import generate_offer
+    from app.services.message_service import generate_messages
+
+    result = await db.execute(
+        select(Lead)
+        .where(Lead.id == lead_id)
+        .options(selectinload(Lead.messages), selectinload(Lead.conversations))
+    )
+    lead = result.scalar_one_or_none()
+    if not lead:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "Lead not found", "code": "NOT_FOUND"},
+        )
+
+    # Step 1: Website scan
+    if lead.website:
+        lead.scan_status = "scanning"
+        await db.flush()
+        ws = await scan_website(lead, db)
+        lead.scan_status = "success" if ws else "failed"
+    else:
+        lead.scan_status = "failed"
+
+    # Step 2: Score + offer
+    score, reason = await score_lead(lead)
+    lead.score = score
+    lead.score_reason = reason
+    offer = await generate_offer(lead, db)
+    lead.custom_offer = offer
+    lead.status = "scored"
+
+    # Step 3: Generate messages (skips if messages already exist for this lead)
+    await generate_messages(lead=lead, db=db)
+
+    await db.commit()
+
+    result2 = await db.execute(
+        select(Lead)
+        .where(Lead.id == lead_id)
+        .options(selectinload(Lead.messages), selectinload(Lead.conversations))
+    )
+    return result2.scalar_one()
 
 
 @router.get("/{lead_id}/scan", response_model=WebsiteScanResponse)

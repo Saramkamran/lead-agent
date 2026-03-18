@@ -276,3 +276,6 @@ export const getLeadScan = (id: string) =>
 
 export const triggerLeadScan = (id: string) =>
   apiFetch<{ status: string }>(`/leads/${id}/scan`, { method: "POST" });
+
+export const processLead = (id: string) =>
+  apiFetch<Lead>(`/leads/${id}/process`, { method: "POST" });

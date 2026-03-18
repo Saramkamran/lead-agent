@@ -6,6 +6,7 @@ import {
   getLead,
   getLeadScan,
   triggerLeadScan,
+  processLead,
   updateLead,
   deleteLead,
   importLeads,
@@ -23,7 +24,7 @@ import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { Badge, ScoreBadge, StatusBadge } from "@/components/ui/badge";
-import { Upload, X, Trash2, Zap, UserPlus, RefreshCw } from "lucide-react";
+import { Upload, X, Trash2, Zap, UserPlus, RefreshCw, Play } from "lucide-react";
 
 const STATUS_OPTIONS = [
   "", "imported", "scored", "contacted", "follow_up_1", "follow_up_2", "follow_up_3",
@@ -53,6 +54,7 @@ export default function LeadsPage() {
   const [editing, setEditing] = useState<Partial<Lead>>({});
   const [scan, setScan] = useState<WebsiteScan | null>(null);
   const [scanLoading, setScanLoading] = useState(false);
+  const [processing, setProcessing] = useState(false);
 
   const [scoring, setScoring] = useState(false);
   const [scoredCount, setScoredCount] = useState<number | null>(null);
@@ -214,6 +216,33 @@ export default function LeadsPage() {
     }
   }
 
+  async function handleProcessLead() {
+    if (!selectedLead) return;
+    setProcessing(true);
+    try {
+      const updated = await processLead(selectedLead.id);
+      setSelectedLead(updated);
+      setEditing({
+        first_name: updated.first_name,
+        last_name: updated.last_name,
+        company: updated.company,
+        title: updated.title,
+        website: updated.website,
+        industry: updated.industry,
+        company_size: updated.company_size,
+        status: updated.status,
+        outreach_account_id: updated.outreach_account_id ?? "",
+      });
+      // Reload scan data
+      getLeadScan(updated.id).then(setScan).catch(() => setScan(null));
+      fetchLeads();
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setProcessing(false);
+    }
+  }
+
   const totalPages = Math.ceil(total / PAGE_SIZE);
 
   return (
@@ -348,9 +377,20 @@ export default function LeadsPage() {
               <h2 className="font-semibold text-gray-900 text-lg">
                 {[selectedLead.first_name, selectedLead.last_name].filter(Boolean).join(" ") || selectedLead.email}
               </h2>
-              <button onClick={() => setSlideOpen(false)} className="text-gray-400 hover:text-gray-600">
-                <X size={20} />
-              </button>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={handleProcessLead}
+                  disabled={processing}
+                >
+                  <Play size={14} className={processing ? "animate-pulse" : ""} />
+                  {processing ? "Processing…" : "Process Lead"}
+                </Button>
+                <button onClick={() => setSlideOpen(false)} className="text-gray-400 hover:text-gray-600">
+                  <X size={20} />
+                </button>
+              </div>
             </div>
 
             <div className="flex-1 p-6 space-y-6">
