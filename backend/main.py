@@ -64,8 +64,8 @@ async def _poll_all_imap_sources() -> None:
                 except Exception:
                     continue
 
-                # Skip if this account's IMAP is same as global (avoid duplicate processing)
-                if account.imap_host == settings.IMAP_HOST and account.smtp_user == settings.IMAP_USER:
+                # Skip if this account's email matches the global IMAP user (same mailbox, different hostname)
+                if account.smtp_user.lower() == settings.IMAP_USER.lower():
                     continue
 
                 tasks.append(poll_imap_account(
