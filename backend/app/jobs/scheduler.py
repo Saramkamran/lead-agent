@@ -170,10 +170,11 @@ async def _resolve_send_account(lead: Lead, db: AsyncSession) -> OutreachAccount
     return account
 
 
-async def job_send_daily_outreach() -> int:
+async def job_send_daily_outreach(bypass_hour_check: bool = False) -> int:
     """
     Send cold emails to scored leads.
     Runs on an hourly interval; checks each campaign's send_hour before sending.
+    Pass bypass_hour_check=True for manual triggers to ignore the send_hour gate.
     max_instances=1 prevents overlap when send delays push runtime over 1 hour.
     """
     if not _is_weekday():
@@ -196,8 +197,8 @@ async def job_send_daily_outreach() -> int:
         total_sent = 0
 
         for campaign in campaigns:
-            # Only send if we're in the campaign's scheduled hour
-            if now.hour != campaign.send_hour:
+            # Only send if we're in the campaign's scheduled hour (skip for manual triggers)
+            if not bypass_hour_check and now.hour != campaign.send_hour:
                 continue
 
             sent_today_result = await db.execute(
