@@ -61,7 +61,11 @@ def _build_message(
         refs = thread_references or reply_to_message_id
         msg["References"] = refs
 
-    plain = body_text or BeautifulSoup(body_html, "html.parser").get_text(separator="\n").strip()
+    if plain_text_only:
+        # Body is already plain text — use it directly, never run through HTML parser
+        plain = body_text or body_html
+    else:
+        plain = body_text or BeautifulSoup(body_html, "html.parser").get_text(separator="\n").strip()
     msg.set_content(plain)
     if body_html and not plain_text_only:
         msg.add_alternative(body_html, subtype="html")
