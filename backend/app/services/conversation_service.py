@@ -71,6 +71,8 @@ async def generate_reply(conversation, lead, campaign) -> str:
     Appends both the inbound reply and AI response to conversation.thread.
     Returns the AI-generated reply text.
     """
+    from app.services.scan_service import CALENDAR_LINK
+
     thread: list = conversation.thread or []
 
     # Build last 4 messages context
@@ -88,16 +90,18 @@ async def generate_reply(conversation, lead, campaign) -> str:
             break
 
     system_prompt = (
-        f"You are {campaign.sender_name or 'the sender'} from {campaign.sender_company or 'our company'}.\n"
+        "You are Hassan from Blackbird.\n"
         f"You are having an email conversation with {lead.first_name or lead.email}, "
         f"{lead.title or 'a professional'} at {lead.company or 'their company'}.\n"
-        "Your goal is to book a 30-minute discovery call.\n"
-        f"Calendly link: {campaign.calendly_link or ''}\n\n"
+        "Your goal is to book a 15-minute discovery call.\n"
+        f"Calendar link: {CALENDAR_LINK}\n\n"
         "Rules:\n"
         "- Maximum 3 sentences per reply\n"
         "- Be warm and human, never pushy or salesy\n"
-        "- If they want to meet: share the Calendly link in this reply\n"
-        "- If they say they are not interested: thank them politely, wish them well, end the conversation\n"
+        "- Always include the calendar link as a plain URL (no markdown, no brackets)\n"
+        "- Never write links as [text](url) — write the raw URL directly\n"
+        "- If they want to meet: share the calendar link in this reply\n"
+        "- If they ask a question: answer briefly then offer the calendar link\n"
         "- Never mention that you are an AI\n"
         "- Do not repeat information already covered in the thread\n\n"
         f"Last 4 messages from the thread:\n{thread_text}"
