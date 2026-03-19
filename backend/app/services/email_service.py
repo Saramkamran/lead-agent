@@ -149,6 +149,8 @@ async def poll_imap_account(creds: dict, handle_reply_callback) -> None:
         _, data = await imap.search("UNSEEN")
         uid_list = data[0].split() if data and data[0] else []
 
+        logger.info("[IMAP] Checked %s (%s) — %d unseen message(s)", host, user, len(uid_list))
+
         for uid in uid_list:
             uid_str = uid.decode() if isinstance(uid, bytes) else str(uid)
             try:
@@ -207,7 +209,7 @@ async def poll_imap_account(creds: dict, handle_reply_callback) -> None:
         await imap.logout()
 
     except Exception as e:
-        logger.error("[IMAP] Poll cycle error on %s at %s: %s", host, datetime.now(timezone.utc).isoformat(), e)
+        logger.error("[IMAP] Poll cycle error on %s (%s) at %s: %s", host, user, datetime.now(timezone.utc).isoformat(), e)
 
 
 async def poll_imap_replies(handle_reply_callback) -> None:
