@@ -119,14 +119,17 @@ async def import_leads(
         "e-mail": "email", "e_mail": "email", "email address": "email",
         # name
         "contact name": "full_name", "name": "full_name",
-        "contact": "full_name", "full name": "full_name",
+        "contact": "full_name", "full name": "full_name", "contact person": "full_name",
+        "person": "full_name", "rep": "full_name", "representative": "full_name",
         "firstname": "first_name", "first": "first_name",
         "lastname": "last_name", "last": "last_name", "surname": "last_name",
         # company
         "organization": "company", "organisation": "company", "account": "company",
+        "business": "company", "business name": "company", "company name": "company",
         # website / domain
         "domain": "website", "url": "website", "web": "website",
-        "website url": "website", "domain name": "website",
+        "website url": "website", "domain name": "website", "web address": "website",
+        "web url": "website", "site": "website", "site url": "website",
         # size
         "employee count": "company_size", "employees": "company_size",
         "num employees": "company_size", "# employees": "company_size",

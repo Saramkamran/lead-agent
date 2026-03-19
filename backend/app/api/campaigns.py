@@ -106,6 +106,11 @@ async def start_campaign(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"error": "Campaign not found", "code": "NOT_FOUND"},
         )
+    if campaign.status == "active":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "Campaign is already active", "code": "ALREADY_ACTIVE"},
+        )
     if not campaign.sender_email:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
