@@ -165,6 +165,11 @@ async def handle_reply(reply_data: dict) -> None:
         lead.status = "replied"
 
         if intent == "interested":
+            # Guard: don't send a second booking response if already sent
+            if lead.reply_category == "interested":
+                logger.info("[REPLY] Booking response already sent to %s — skipping duplicate", from_email)
+                await db.commit()
+                return
             # Auto-send booking response immediately — no AI generation needed
             to_name = f"{lead.first_name or ''} {lead.last_name or ''}".strip() or lead.email
             first_name = lead.first_name or "there"
