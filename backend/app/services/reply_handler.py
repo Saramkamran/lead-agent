@@ -224,6 +224,33 @@ async def handle_reply(reply_data: dict) -> None:
                 body=booking_body,
                 received_at=datetime.now(timezone.utc),
             ))
+
+            # Create/update conversation so it appears in the UI
+            conv_result = await db.execute(
+                select(Conversation)
+                .where(Conversation.lead_id == lead.id)
+                .limit(1)
+            )
+            conversation = conv_result.scalar_one_or_none()
+            now = datetime.now(timezone.utc).isoformat()
+            if not conversation:
+                conversation = Conversation(
+                    id=str(uuid.uuid4()),
+                    lead_id=lead.id,
+                    status="active",
+                    thread=[],
+                )
+                db.add(conversation)
+                await db.flush()
+
+            thread = list(conversation.thread or [])
+            thread.append({"role": "lead", "content": body, "timestamp": now})
+            thread.append({"role": "agent", "content": booking_body, "timestamp": now})
+            conversation.thread = thread
+            flag_modified(conversation, "thread")
+            conversation.sentiment = "interested"
+            conversation.updated_at = datetime.now(timezone.utc)
+
             await db.commit()
             logger.info("[REPLY] Booking response sent to %s", from_email)
             return
