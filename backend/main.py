@@ -25,7 +25,8 @@ _imap_task: asyncio.Task | None = None
 
 async def _poll_all_imap_sources() -> None:
     """
-    Long-running loop that polls the global IMAP account plus all active outreach accounts.
+    Long-running loop that polls all active outreach accounts from the DB.
+    The DB is the single source of truth — deleted accounts are never polled.
     Runs on every IMAP_POLL_INTERVAL_SECONDS tick.
     """
     from sqlalchemy import select
@@ -37,20 +38,7 @@ async def _poll_all_imap_sources() -> None:
     while True:
         tasks = []
 
-        # Global IMAP account (env vars)
-        if settings.IMAP_USER and settings.IMAP_PASS:
-            tasks.append(poll_imap_account(
-                creds={
-                    "host": settings.IMAP_HOST,
-                    "port": settings.IMAP_PORT,
-                    "user": settings.IMAP_USER,
-                    "pass": settings.IMAP_PASS,
-                    "folder": settings.IMAP_REPLY_FOLDER,
-                },
-                handle_reply_callback=handle_reply,
-            ))
-
-        # Per-account IMAP (from DB)
+        # Only poll accounts that currently exist and are active in the DB
         try:
             async with AsyncSessionLocal() as db:
                 result = await db.execute(
@@ -64,10 +52,6 @@ async def _poll_all_imap_sources() -> None:
                 except Exception:
                     continue
 
-                # Skip if this account's email matches the global IMAP user (same mailbox, different hostname)
-                if account.smtp_user.lower() == settings.IMAP_USER.lower():
-                    continue
-
                 tasks.append(poll_imap_account(
                     creds={
                         "host": account.imap_host,
@@ -78,6 +62,10 @@ async def _poll_all_imap_sources() -> None:
                     },
                     handle_reply_callback=handle_reply,
                 ))
+
+            if not accounts:
+                logger.info("[IMAP] No active outreach accounts found — skipping poll cycle")
+
         except Exception as e:
             logger.error("[IMAP] Failed to load outreach accounts for polling: %s", e)
 
