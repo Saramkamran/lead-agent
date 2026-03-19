@@ -215,6 +215,7 @@ async def handle_reply(reply_data: dict) -> bool:
                 body_html=booking_body,
                 reply_to_message_id=message_id,
                 thread_references=thread_references,
+                plain_text_only=True,
                 **smtp_kwargs,
             )
             db.add(EmailLog(
@@ -353,6 +354,7 @@ async def handle_reply(reply_data: dict) -> bool:
             body_html=ai_reply,
             reply_to_message_id=message_id,
             thread_references=thread_references,
+            plain_text_only=True,
             **smtp_kwargs,
         )
 
