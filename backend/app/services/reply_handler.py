@@ -161,12 +161,13 @@ async def handle_reply(reply_data: dict) -> None:
             return
 
         # ── Positive / conversational categories ───────────────────────────
+        prior_reply_category = lead.reply_category  # save before overwriting
         lead.reply_category = intent
         lead.status = "replied"
 
         if intent == "interested":
             # Guard: don't send a second booking response if already sent
-            if lead.reply_category == "interested":
+            if prior_reply_category == "interested":
                 logger.info("[REPLY] Booking response already sent to %s — skipping duplicate", from_email)
                 await db.commit()
                 return
