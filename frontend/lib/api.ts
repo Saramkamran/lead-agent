@@ -179,10 +179,15 @@ export interface Campaign {
   id: string;
   name: string;
   status: string;
+  sender_name?: string;
+  sender_email?: string;
+  sender_company?: string;
   daily_limit: number;
   min_score: number;
   send_hour: number;
   send_minute: number;
+  target_industry?: string;
+  calendly_link?: string;
   created_at: string;
   lead_count: number;
 }
