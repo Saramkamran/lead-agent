@@ -69,7 +69,7 @@ async def handle_reply(reply_data: dict) -> None:
                 lead_id = matched_log.lead_id
 
         if not lead_id:
-            # Fallback: match by sender email for mail servers that replace Message-IDs
+            # Fallback 1: match by sender email + status
             fallback_result = await db.execute(
                 select(Lead)
                 .where(
@@ -84,8 +84,25 @@ async def handle_reply(reply_data: dict) -> None:
                 lead = fallback_lead
                 logger.info("[REPLY] Matched lead by from_email fallback: %s", from_email)
             else:
-                logger.info("[REPLY] No matching campaign thread for message from %s — ignoring", from_email)
-                return
+                # Fallback 2: match by email address + has at least one outbound email log
+                # Handles Gmail Message-ID replacement + status update failures
+                fallback2_result = await db.execute(
+                    select(Lead)
+                    .join(EmailLog, EmailLog.lead_id == Lead.id)
+                    .where(
+                        Lead.email == from_email,
+                        EmailLog.direction == "outbound",
+                    )
+                    .limit(1)
+                )
+                fallback2_lead = fallback2_result.scalar_one_or_none()
+                if fallback2_lead:
+                    lead_id = fallback2_lead.id
+                    lead = fallback2_lead
+                    logger.info("[REPLY] Matched lead by email+outbound-log fallback: %s (status=%s)", from_email, fallback2_lead.status)
+                else:
+                    logger.info("[REPLY] No matching campaign thread for message from %s — ignoring", from_email)
+                    return
         else:
             lead = None
 
