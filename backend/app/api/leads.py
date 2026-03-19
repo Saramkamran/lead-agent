@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, 
 from openai import AsyncOpenAI
 from sqlalchemy import delete as sql_delete
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -289,7 +290,14 @@ async def update_lead(
     for field, value in update_data.items():
         setattr(lead, field, value)
 
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"error": "Invalid outreach_account_id — account not found", "code": "INVALID_ACCOUNT"},
+        )
     return lead
 
 

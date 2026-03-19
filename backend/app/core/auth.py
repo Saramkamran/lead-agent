@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.database import get_db
 
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
 
 def hash_password(plain: str) -> str:
@@ -30,7 +30,7 @@ def create_access_token(data: dict) -> str:
 
 
 async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     db: AsyncSession = Depends(get_db),
 ):
     from app.models.user import User
@@ -38,7 +38,14 @@ async def get_current_user(
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail={"error": "Invalid or expired token", "code": "UNAUTHORIZED"},
+        headers={"WWW-Authenticate": "Bearer"},
     )
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": "Authentication required", "code": "UNAUTHORIZED"},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     try:
         payload = jwt.decode(credentials.credentials, settings.JWT_SECRET, algorithms=["HS256"])
         user_id: Optional[str] = payload.get("sub")

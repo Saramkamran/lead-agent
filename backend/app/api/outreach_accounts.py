@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import ssl
 
@@ -150,23 +151,31 @@ async def test_connection(
     _ssl_ctx.check_hostname = False
     _ssl_ctx.verify_mode = ssl.CERT_NONE
 
+    _CONN_TIMEOUT = 10.0  # seconds before giving up on unreachable hosts
+
     # Test SMTP
     smtp_status = "failed"
     smtp_error = ""
     try:
-        use_tls = account.smtp_port == 465
-        smtp = aiosmtplib.SMTP(
-            hostname=account.smtp_host,
-            port=account.smtp_port,
-            use_tls=use_tls,
-            tls_context=_ssl_ctx,
-        )
-        await smtp.connect()
-        if not use_tls:
-            await smtp.starttls(tls_context=_ssl_ctx)
-        await smtp.login(account.smtp_user, plain_pass)
-        await smtp.quit()
+        async def _test_smtp() -> None:
+            use_tls = account.smtp_port == 465
+            smtp = aiosmtplib.SMTP(
+                hostname=account.smtp_host,
+                port=account.smtp_port,
+                use_tls=use_tls,
+                tls_context=_ssl_ctx,
+            )
+            await smtp.connect()
+            if not use_tls:
+                await smtp.starttls(tls_context=_ssl_ctx)
+            await smtp.login(account.smtp_user, plain_pass)
+            await smtp.quit()
+
+        await asyncio.wait_for(_test_smtp(), timeout=_CONN_TIMEOUT)
         smtp_status = "ok"
+    except asyncio.TimeoutError:
+        smtp_error = f"Connection timed out after {int(_CONN_TIMEOUT)}s — check host/port"
+        logger.warning("[TEST] SMTP timed out for account %s", account_id)
     except Exception as e:
         smtp_error = str(e)
         logger.warning("[TEST] SMTP failed for account %s: %s", account_id, e)
@@ -175,13 +184,19 @@ async def test_connection(
     imap_status = "failed"
     imap_error = ""
     try:
-        imap = aioimaplib.IMAP4_SSL(
-            host=account.imap_host, port=account.imap_port, ssl_context=_ssl_ctx
-        )
-        await imap.wait_hello_from_server()
-        await imap.login(account.smtp_user, plain_pass)
-        await imap.logout()
+        async def _test_imap() -> None:
+            imap = aioimaplib.IMAP4_SSL(
+                host=account.imap_host, port=account.imap_port, ssl_context=_ssl_ctx
+            )
+            await imap.wait_hello_from_server()
+            await imap.login(account.smtp_user, plain_pass)
+            await imap.logout()
+
+        await asyncio.wait_for(_test_imap(), timeout=_CONN_TIMEOUT)
         imap_status = "ok"
+    except asyncio.TimeoutError:
+        imap_error = f"Connection timed out after {int(_CONN_TIMEOUT)}s — check host/port"
+        logger.warning("[TEST] IMAP timed out for account %s", account_id)
     except Exception as e:
         imap_error = str(e)
         logger.warning("[TEST] IMAP failed for account %s: %s", account_id, e)
