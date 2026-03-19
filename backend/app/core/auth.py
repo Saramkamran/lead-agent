@@ -51,4 +51,19 @@ async def get_current_user(
     user = result.scalar_one_or_none()
     if user is None:
         raise credentials_exception
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": "Account is deactivated", "code": "ACCOUNT_INACTIVE"},
+        )
+    return user
+
+
+async def get_current_admin(user=Depends(get_current_user)):
+    """Dependency that requires the current user to have admin role."""
+    if user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"error": "Admin access required", "code": "FORBIDDEN"},
+        )
     return user

@@ -34,6 +34,7 @@ class Lead(Base):
     )
     scan_status: Mapped[Optional[str]] = mapped_column(String(50), default="pending")
     scan_retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    send_fail_count: Mapped[int] = mapped_column(Integer, default=0)
     last_contacted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     next_followup_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     reply_category: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)

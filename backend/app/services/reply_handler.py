@@ -31,11 +31,13 @@ Looking forward to it.
 Hassan"""
 
 
-async def handle_reply(reply_data: dict) -> None:
+async def handle_reply(reply_data: dict) -> bool:
     """
     Called by the IMAP poller for every new unseen message.
     Matches the reply to a campaign thread via Message-ID headers,
     classifies intent, and triggers the appropriate response.
+    Returns True if the message matched a campaign lead (should be marked Seen),
+    False if no match was found (leave message unread in inbox).
     """
     from_email = reply_data.get("from_email", "").strip().lower()
     subject = reply_data.get("subject", "")
@@ -46,7 +48,7 @@ async def handle_reply(reply_data: dict) -> None:
 
     if not from_email:
         logger.warning("[REPLY] No sender email in reply_data — ignoring")
-        return
+        return False
 
     # Build correlation set: all Message-IDs from References + In-Reply-To
     correlation_ids: list[str] = []
@@ -102,7 +104,7 @@ async def handle_reply(reply_data: dict) -> None:
                     logger.info("[REPLY] Matched lead by email+outbound-log fallback: %s (status=%s)", from_email, fallback2_lead.status)
                 else:
                     logger.info("[REPLY] No matching campaign thread for message from %s — ignoring", from_email)
-                    return
+                    return False
         else:
             lead = None
 
@@ -112,7 +114,7 @@ async def handle_reply(reply_data: dict) -> None:
             lead = lead_result.scalar_one_or_none()
             if not lead:
                 logger.warning("[REPLY] Lead %s not found — ignoring", lead_id)
-                return
+                return False
 
         # Step 3: Save inbound message to email_logs
         inbound_log = EmailLog(
@@ -137,28 +139,28 @@ async def handle_reply(reply_data: dict) -> None:
             lead.reply_category = intent
             await db.commit()
             logger.info("[REPLY] Disqualified lead %s (%s)", from_email, intent)
-            return
+            return True
 
         if intent == "not_interested":
             lead.status = "not_interested"
             lead.reply_category = intent
             await db.commit()
             logger.info("[REPLY] Lead %s marked not_interested", from_email)
-            return
+            return True
 
         if intent == "out_of_office":
             lead.reply_category = "out_of_office"
             # Do NOT change status — sequence will naturally pause while status stays as-is
             await db.commit()
             logger.info("[REPLY] OOO reply from %s — sequence paused", from_email)
-            return
+            return True
 
         if intent == "wrong_person":
             lead.reply_category = "wrong_person"
             lead.status = "replied"
             await db.commit()
             logger.info("[REPLY] Wrong-person reply from %s — flagged for manual review", from_email)
-            return
+            return True
 
         # ── Positive / conversational categories ───────────────────────────
         prior_reply_category = lead.reply_category  # save before overwriting
@@ -170,7 +172,7 @@ async def handle_reply(reply_data: dict) -> None:
             if prior_reply_category == "interested":
                 logger.info("[REPLY] Booking response already sent to %s — skipping duplicate", from_email)
                 await db.commit()
-                return
+                return True
             # Auto-send booking response immediately — no AI generation needed
             to_name = f"{lead.first_name or ''} {lead.last_name or ''}".strip() or lead.email
             first_name = lead.first_name or "there"
@@ -253,7 +255,7 @@ async def handle_reply(reply_data: dict) -> None:
 
             await db.commit()
             logger.info("[REPLY] Booking response sent to %s", from_email)
-            return
+            return True
 
         # intent == "question" — generate AI reply (existing logic)
         # Step 5: find/create conversation
@@ -286,7 +288,7 @@ async def handle_reply(reply_data: dict) -> None:
             flag_modified(conversation, "thread")
             conversation.sentiment = intent
             await db.commit()
-            return
+            return True
 
         # Append inbound message to thread
         thread = list(conversation.thread or [])
@@ -314,7 +316,7 @@ async def handle_reply(reply_data: dict) -> None:
         if not ai_reply:
             logger.warning("[REPLY] generate_reply returned empty for lead %s — skipping send", from_email)
             await db.commit()
-            return
+            return True
 
         # Step 8: Build threading headers
         all_logs_result = await db.execute(
@@ -367,3 +369,4 @@ async def handle_reply(reply_data: dict) -> None:
 
         await db.commit()
         logger.info("[REPLY] AI reply sent for lead %s", from_email)
+        return True

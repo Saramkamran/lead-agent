@@ -21,6 +21,8 @@ class TokenResponse(BaseModel):
 class UserResponse(BaseModel):
     id: str
     email: str
+    role: str = "user"
+    is_active: bool = True
     created_at: datetime
 
     model_config = {"from_attributes": True}

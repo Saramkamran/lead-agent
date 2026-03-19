@@ -1,18 +1,20 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getCampaigns, createCampaign, updateCampaign, startCampaign, pauseCampaign, triggerOutreachJob, Campaign } from "@/lib/api";
+import { getCampaigns, createCampaign, updateCampaign, startCampaign, pauseCampaign, deleteCampaign, triggerOutreachJob, Campaign } from "@/lib/api";
 import { AppShell } from "@/components/layout/app-shell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { StatusBadge } from "@/components/ui/badge";
-import { Plus, Play, Pause, Pencil, Send } from "lucide-react";
+import { Plus, Play, Pause, Pencil, Send, Trash2 } from "lucide-react";
 
 const EMPTY_FORM: Partial<Campaign> = {
   name: "",
   daily_limit: 30,
   min_score: 50,
+  send_hour: 9,
+  send_minute: 0,
 };
 
 export default function CampaignsPage() {
@@ -53,6 +55,8 @@ export default function CampaignsPage() {
       name: campaign.name,
       daily_limit: campaign.daily_limit,
       min_score: campaign.min_score,
+      send_hour: campaign.send_hour ?? 9,
+      send_minute: campaign.send_minute ?? 0,
     });
     setError("");
     setModalOpen(true);
@@ -75,6 +79,17 @@ export default function CampaignsPage() {
       setError(msg);
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleDelete(campaign: Campaign) {
+    if (!confirm(`Delete campaign "${campaign.name}"? This cannot be undone.`)) return;
+    try {
+      await deleteCampaign(campaign.id);
+      fetchCampaigns();
+    } catch (e: unknown) {
+      const msg = e && typeof e === "object" && "error" in e ? String((e as { error: string }).error) : "Delete failed";
+      alert(msg);
     }
   }
 
@@ -139,14 +154,15 @@ export default function CampaignsPage() {
                 <th className="px-4 py-3 font-medium text-gray-600">Status</th>
                 <th className="px-4 py-3 font-medium text-gray-600">Min Score</th>
                 <th className="px-4 py-3 font-medium text-gray-600">Daily Limit</th>
+                <th className="px-4 py-3 font-medium text-gray-600">Send Time</th>
                 <th className="px-4 py-3 font-medium text-gray-600">Actions</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={5} className="px-4 py-8 text-center text-gray-400">Loading…</td></tr>
+                <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-400">Loading…</td></tr>
               ) : campaigns.length === 0 ? (
-                <tr><td colSpan={5} className="px-4 py-8 text-center text-gray-400">No campaigns yet. Create one to start sending.</td></tr>
+                <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-400">No campaigns yet. Create one to start sending.</td></tr>
               ) : (
                 campaigns.map((c) => (
                   <tr key={c.id} className="border-b border-gray-50">
@@ -154,6 +170,9 @@ export default function CampaignsPage() {
                     <td className="px-4 py-3"><StatusBadge status={c.status} /></td>
                     <td className="px-4 py-3 text-gray-600">{c.min_score}</td>
                     <td className="px-4 py-3 text-gray-600">{c.daily_limit}/day</td>
+                    <td className="px-4 py-3 text-gray-600">
+                      {String(c.send_hour ?? 9).padStart(2, "0")}:{String(c.send_minute ?? 0).padStart(2, "0")} UTC
+                    </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
                         <button
@@ -174,6 +193,14 @@ export default function CampaignsPage() {
                           className="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                         >
                           <Pencil size={16} />
+                        </button>
+                        <button
+                          onClick={() => handleDelete(c)}
+                          disabled={c.status === "active"}
+                          title={c.status === "active" ? "Pause campaign to delete" : "Delete"}
+                          className="p-1.5 rounded-lg text-red-400 hover:text-red-600 hover:bg-red-50 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                        >
+                          <Trash2 size={16} />
                         </button>
                       </div>
                     </td>
@@ -215,6 +242,23 @@ export default function CampaignsPage() {
               value={form.daily_limit ?? 30}
               onChange={(e) => setForm({ ...form, daily_limit: Number(e.target.value) })}
             />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Send hour (UTC)</label>
+              <select
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                value={form.send_hour ?? 9}
+                onChange={(e) => setForm({ ...form, send_hour: Number(e.target.value) })}
+              >
+                {Array.from({ length: 24 }, (_, i) => (
+                  <option key={i} value={i}>{String(i).padStart(2, "0")}:00</option>
+                ))}
+              </select>
+            </div>
+            <div className="flex items-end">
+              <p className="text-xs text-gray-500 pb-2">Outreach fires once per hour. Set the UTC hour when cold emails should go out.</p>
+            </div>
           </div>
 
           {error && <p className="text-sm text-red-600">{error}</p>}

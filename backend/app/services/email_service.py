@@ -17,6 +17,19 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 
+_SPAM_WORDS = [
+    "guarantee", "guaranteed", "free", "click here", "limited time",
+    "act now", "offer expires", "winner", "cash", "earn money",
+    "make money", "risk free", "no cost", "congratulations",
+    "this is not spam", "buy now", "order now", "special promotion",
+]
+
+
+def _check_spam_words(body: str) -> list[str]:
+    lower = body.lower()
+    return [w for w in _SPAM_WORDS if w in lower]
+
+
 def _build_message(
     to_email: str,
     to_name: str,
@@ -27,6 +40,7 @@ def _build_message(
     thread_references: str | None = None,
     from_name: str | None = None,
     from_email: str | None = None,
+    plain_text_only: bool = False,
 ) -> tuple[EmailMessage, str]:
     """Build an EmailMessage and return it along with the generated Message-ID."""
     _from_email = from_email or settings.SMTP_FROM_EMAIL
@@ -49,7 +63,7 @@ def _build_message(
 
     plain = body_text or BeautifulSoup(body_html, "html.parser").get_text(separator="\n").strip()
     msg.set_content(plain)
-    if body_html:
+    if body_html and not plain_text_only:
         msg.add_alternative(body_html, subtype="html")
 
     return msg, message_id
@@ -70,6 +84,7 @@ async def send_email(
     smtp_pass: str | None = None,
     from_name: str | None = None,
     from_email: str | None = None,
+    plain_text_only: bool = False,
 ) -> str:
     """
     Send an email via SMTP (aiosmtplib).
@@ -84,6 +99,11 @@ async def send_email(
     _smtp_user = smtp_user or settings.SMTP_USER
     _smtp_pass = smtp_pass or settings.SMTP_PASS
 
+    # Warn on spam words before sending
+    spam_matches = _check_spam_words(body_html)
+    if spam_matches:
+        logger.warning("[EMAIL] Spam word warning for %s: %s", to_email, spam_matches)
+
     try:
         msg, message_id = _build_message(
             to_email=to_email,
@@ -95,6 +115,7 @@ async def send_email(
             thread_references=thread_references,
             from_name=from_name,
             from_email=from_email,
+            plain_text_only=plain_text_only,
         )
 
         use_tls = _smtp_port == 465
@@ -146,8 +167,14 @@ async def poll_imap_account(creds: dict, handle_reply_callback) -> None:
         await imap.login(user, password)
         await imap.select(folder)
 
-        _, data = await imap.search("UNSEEN")
-        uid_list = data[0].split() if data and data[0] else []
+        # Try narrow search first — only fetch actual replies (have In-Reply-To header)
+        try:
+            _, data = await imap.search('UNSEEN HEADER "In-Reply-To" ""')
+            uid_list = data[0].split() if data and data[0] else []
+        except Exception:
+            # Fallback: all UNSEEN (some IMAP servers don't support HEADER search)
+            _, data = await imap.search("UNSEEN")
+            uid_list = data[0].split() if data and data[0] else []
 
         logger.info("[IMAP] Checked %s (%s) — %d unseen message(s)", host, user, len(uid_list))
 
@@ -199,9 +226,12 @@ async def poll_imap_account(creds: dict, handle_reply_callback) -> None:
                     "references": references,
                 }
 
-                await handle_reply_callback(reply_data)
-                await imap.store(uid_str, "+FLAGS", "\\Seen")
-                logger.info("[IMAP] Processed and marked Seen: seq=%s from=%s on %s", uid_str, from_email_addr, host)
+                matched = await handle_reply_callback(reply_data)
+                if matched:
+                    await imap.store(uid_str, "+FLAGS", "\\Seen")
+                    logger.info("[IMAP] Processed and marked Seen: seq=%s from=%s on %s", uid_str, from_email_addr, host)
+                else:
+                    logger.info("[IMAP] No campaign match — leaving unseen: seq=%s from=%s on %s", uid_str, from_email_addr, host)
 
             except Exception as e:
                 logger.error("[IMAP] Error processing uid %s on %s: %s", uid_str, host, e)

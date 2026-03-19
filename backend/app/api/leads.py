@@ -1,18 +1,26 @@
 import csv
 import io
+import json
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from openai import AsyncOpenAI
+from sqlalchemy import delete as sql_delete
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.auth import get_current_user
+from app.core.config import settings
 from app.core.database import get_db
 from app.models.lead import Lead
+from app.models.message import Message
 from app.models.outreach_account import OutreachAccount
 from app.models.user import User
 from app.models.website_scan import WebsiteScan
+
+logger = logging.getLogger(__name__)
 from app.schemas.lead import (
     AccountAssignmentItem,
     ImportResponse,
@@ -28,6 +36,45 @@ from app.schemas.lead import (
 router = APIRouter(prefix="/leads", tags=["leads"])
 
 VALID_EMAIL_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@._+-")
+
+_SCHEMA_FIELDS = ["email", "first_name", "last_name", "full_name", "company", "title", "website", "industry", "company_size"]
+
+
+async def _ai_map_columns(headers: list[str], sample_row: dict) -> dict[str, str]:
+    """
+    Use GPT-4o-mini to map arbitrary CSV column names to CRM schema fields.
+    Returns a dict like {"Email Address": "email", "Business Name": "company"}.
+    Falls back to empty dict on any error.
+    """
+    if not settings.OPENAI_API_KEY:
+        return {}
+    try:
+        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        prompt = (
+            f"Map these CSV column headers to CRM field names.\n"
+            f"CRM fields: {', '.join(_SCHEMA_FIELDS)}\n"
+            f"CSV headers: {headers}\n"
+            f"Sample row: {json.dumps(sample_row)}\n\n"
+            "Return a JSON object mapping each CSV header to the best CRM field name, "
+            "or null if there is no match. Example: {{\"Email Address\": \"email\", \"Business\": \"company\"}}\n"
+            "Return valid JSON only."
+        )
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            max_tokens=200,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = response.choices[0].message.content.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        mapping = json.loads(raw)
+        # Filter to only valid schema field targets
+        return {k: v for k, v in mapping.items() if v in _SCHEMA_FIELDS}
+    except Exception as e:
+        logger.warning("[CSV] AI column mapping failed: %s", e)
+        return {}
 
 
 def is_valid_email(email: str) -> bool:
@@ -54,7 +101,18 @@ async def import_leads(
 
     raw_reader = csv.DictReader(io.StringIO(text))
 
-    # Normalise headers: lowercase + strip, then remap common aliases
+    # Read all rows to get headers + sample row for AI mapping
+    all_raw_rows = list(raw_reader)
+    if not all_raw_rows:
+        return ImportResponse(imported=0, skipped=0, errors=["CSV file is empty"])
+
+    headers = list(all_raw_rows[0].keys())
+    sample_row = {k: v for k, v in all_raw_rows[0].items()}
+
+    # Try AI column mapping first
+    ai_mapping = await _ai_map_columns(headers, sample_row)
+
+    # Static alias fallback
     _ALIASES: dict[str, str] = {
         # email
         "e-mail": "email", "e_mail": "email", "email address": "email",
@@ -79,8 +137,13 @@ async def import_leads(
     def _norm(row: dict) -> dict:
         out: dict = {}
         for k, v in row.items():
-            key = k.strip().lower()
-            key = _ALIASES.get(key, key)
+            # AI mapping takes precedence over static aliases
+            ai_target = ai_mapping.get(k)
+            if ai_target:
+                key = ai_target
+            else:
+                key = k.strip().lower()
+                key = _ALIASES.get(key, key)
             out[key] = v
         # Split "full_name" into first/last if dedicated columns absent
         if "full_name" in out and "first_name" not in out:
@@ -96,7 +159,7 @@ async def import_leads(
     rows_to_insert = []
     seen_emails = set()
 
-    for i, raw_row in enumerate(raw_reader, start=2):  # start=2 because row 1 is header
+    for i, raw_row in enumerate(all_raw_rows, start=2):  # start=2 because row 1 is header
         row = _norm(raw_row)
         email = row.get("email", "").strip().lower()
         if not email:
@@ -244,6 +307,36 @@ async def delete_lead(
             detail={"error": "Lead not found", "code": "NOT_FOUND"},
         )
     await db.delete(lead)
+    await db.flush()
+
+
+@router.delete("/{lead_id}/messages", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_lead_messages(
+    lead_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """
+    Delete cached messages for a lead so they will be regenerated on the next process/outreach run.
+    Blocked for leads in an active outreach sequence to prevent the followup job from crashing.
+    """
+    result = await db.execute(select(Lead).where(Lead.id == lead_id))
+    lead = result.scalar_one_or_none()
+    if not lead:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "Lead not found", "code": "NOT_FOUND"},
+        )
+    if lead.status in ("contacted", "follow_up_1", "follow_up_2", "follow_up_3"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "Cannot delete messages for a lead in an active outreach sequence. "
+                         "Wait for the sequence to complete or mark the lead as not_interested first.",
+                "code": "LEAD_IN_SEQUENCE",
+            },
+        )
+    await db.execute(sql_delete(Message).where(Message.lead_id == lead_id))
     await db.flush()
 
 

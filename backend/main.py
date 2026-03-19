@@ -7,7 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import auth, campaigns, conversations, health, jobs, leads, outreach_accounts
+from app.api import admin, auth, campaigns, conversations, health, jobs, leads, outreach_accounts
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.jobs.scheduler import start_scheduler, stop_scheduler
@@ -142,6 +142,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(auth.router)
+    app.include_router(admin.router)
     app.include_router(leads.router)
     app.include_router(campaigns.router)
     app.include_router(conversations.router)

@@ -26,6 +26,10 @@ _SUBJECT_OPTIONS = [
     "Quick observation",
 ]
 
+_UNSUBSCRIBE_FOOTER = """
+---
+To opt out, reply with "unsubscribe"."""
+
 _COLD_EMAIL_BODY = """\
 Hi {{first_name}},
 
@@ -44,7 +48,9 @@ I recorded a quick 60-second video explaining exactly what I mean.
 If it makes sense, I'd be happy to show how this could work for {{company}}.
 
 Hassan
-Blackbird"""
+Blackbird
+---
+To opt out, reply with "unsubscribe"."""
 
 _FOLLOWUP_1_BODY = """\
 Hey {{first_name}},
@@ -60,7 +66,9 @@ Here's the video again:
 
 Curious to hear your thoughts.
 
-Hassan"""
+Hassan
+---
+To opt out, reply with "unsubscribe"."""
 
 _FOLLOWUP_2_BODY = """\
 Hey {{first_name}},
@@ -77,7 +85,9 @@ If that's something worth a 15-minute conversation, here's my calendar:
 If the timing isn't right, no problem at all. Happy to reconnect whenever works.
 
 Hassan
-Blackbird"""
+Blackbird
+---
+To opt out, reply with "unsubscribe"."""
 
 _FOLLOWUP_3_BODY = """\
 Hey {{first_name}},
@@ -91,7 +101,9 @@ If things change and you ever want to explore improving lead capture or booking 
 Either way, best of luck with everything.
 
 Hassan
-Blackbird"""
+Blackbird
+---
+To opt out, reply with "unsubscribe"."""
 
 
 def _fill(template: str, first_name: str, company: str, observation: str) -> str:

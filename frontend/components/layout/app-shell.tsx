@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect } from "react";
-import { BarChart2, Mail, MessageSquare, Megaphone, Users, LogOut } from "lucide-react";
+import { useEffect, useState } from "react";
+import { BarChart2, Mail, MessageSquare, Megaphone, Users, LogOut, ShieldCheck } from "lucide-react";
+import { isAdmin } from "@/lib/api";
 
 const NAV = [
   { href: "/dashboard", label: "Dashboard", icon: BarChart2 },
@@ -16,11 +17,14 @@ const NAV = [
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
+  const [admin, setAdmin] = useState(false);
 
   useEffect(() => {
     const token = localStorage.getItem("token");
     if (!token) {
       router.replace("/login");
+    } else {
+      setAdmin(isAdmin());
     }
   }, [router]);
 
@@ -54,6 +58,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               </Link>
             );
           })}
+          {admin && (
+            <Link
+              href="/admin/users"
+              className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                pathname.startsWith("/admin")
+                  ? "bg-indigo-50 text-indigo-700"
+                  : "text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+              }`}
+            >
+              <ShieldCheck size={18} />
+              Users
+            </Link>
+          )}
         </nav>
         <div className="px-3 py-4 border-t border-gray-100">
           <button

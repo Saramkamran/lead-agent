@@ -7,6 +7,7 @@ import {
   getLeadScan,
   triggerLeadScan,
   processLead,
+  deleteLeadMessages,
   updateLead,
   deleteLead,
   importLeads,
@@ -55,6 +56,7 @@ export default function LeadsPage() {
   const [scan, setScan] = useState<WebsiteScan | null>(null);
   const [scanLoading, setScanLoading] = useState(false);
   const [processing, setProcessing] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
 
   const [scoring, setScoring] = useState(false);
   const [scoredCount, setScoredCount] = useState<number | null>(null);
@@ -243,6 +245,35 @@ export default function LeadsPage() {
     }
   }
 
+  async function handleRegenerateEmails() {
+    if (!selectedLead) return;
+    if (!confirm("Delete cached emails and regenerate fresh ones? This cannot be undone.")) return;
+    setRegenerating(true);
+    try {
+      await deleteLeadMessages(selectedLead.id);
+      const updated = await processLead(selectedLead.id);
+      setSelectedLead(updated);
+      setEditing({
+        first_name: updated.first_name,
+        last_name: updated.last_name,
+        company: updated.company,
+        title: updated.title,
+        website: updated.website,
+        industry: updated.industry,
+        company_size: updated.company_size,
+        status: updated.status,
+        outreach_account_id: updated.outreach_account_id ?? "",
+      });
+      getLeadScan(updated.id).then(setScan).catch(() => setScan(null));
+      fetchLeads();
+    } catch (e: unknown) {
+      const msg = e && typeof e === "object" && "error" in e ? String((e as { error: string }).error) : "Regeneration failed";
+      alert(msg);
+    } finally {
+      setRegenerating(false);
+    }
+  }
+
   const totalPages = Math.ceil(total / PAGE_SIZE);
 
   return (
@@ -381,8 +412,18 @@ export default function LeadsPage() {
                 <Button
                   size="sm"
                   variant="secondary"
+                  onClick={handleRegenerateEmails}
+                  disabled={regenerating || processing}
+                  title="Delete cached emails and regenerate with latest scan"
+                >
+                  <RefreshCw size={14} className={regenerating ? "animate-spin" : ""} />
+                  {regenerating ? "Regenerating…" : "Regenerate Emails"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
                   onClick={handleProcessLead}
-                  disabled={processing}
+                  disabled={processing || regenerating}
                 >
                   <Play size={14} className={processing ? "animate-pulse" : ""} />
                   {processing ? "Processing…" : "Process Lead"}

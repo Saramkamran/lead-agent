@@ -123,7 +123,25 @@ async def fetch_pages(url: str) -> list[str]:
     return pages_text
 
 
-async def analyze_with_claude(pages_text: list[str]) -> dict:
+async def fetch_company_news(company_name: str, domain: str) -> str:
+    """
+    Fetch a short news snippet about the company using DuckDuckGo Instant Answer API.
+    Returns a snippet (up to 250 chars) or empty string on any error.
+    """
+    try:
+        query = f'"{company_name}" {domain}'
+        url = f"https://api.duckduckgo.com/?q={query}&format=json&no_redirect=1"
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0 (compatible; LeadScanner/1.0)"})
+            data = resp.json()
+            abstract = data.get("AbstractText", "").strip()
+            return abstract[:250] if abstract else ""
+    except Exception as e:
+        logger.debug("[SCAN] News fetch failed for %s: %s", company_name, e)
+        return ""
+
+
+async def analyze_with_claude(pages_text: list[str], company_name: str = "", news_snippet: str = "") -> dict:
     """
     Send page text to Claude claude-haiku-4-5-20251001 and extract structured website data.
     Returns a dict with detection fields; falls back to safe defaults on error.
@@ -135,6 +153,16 @@ async def analyze_with_claude(pages_text: list[str]) -> dict:
     combined = "\n\n---\n\n".join(
         f"[Page {i+1}]\n{text}" for i, text in enumerate(pages_text)
     )
+
+    news_section = ""
+    if news_snippet:
+        news_section = f"""
+Recent company news (use only if relevant and specific to this business):
+{news_snippet}
+
+If the news contains a recent event (funding, expansion, new product, award), reference it in the personalized_opener. Skip it if news is empty or irrelevant.
+"""
+
     prompt = f"""Analyse the following website content and return a JSON object with these exact fields:
 
 {{
@@ -146,7 +174,8 @@ async def analyze_with_claude(pages_text: list[str]) -> dict:
   "cta_strength": "none" or "weak" or "strong",
   "lead_capture_forms": true or false,
   "design_quality": "basic" or "standard" or "professional",
-  "booking_method": "phone_only" or "email_only" or "form_only" or "calendar" or "none"
+  "booking_method": "phone_only" or "email_only" or "form_only" or "calendar" or "none",
+  "personalized_opener": "One specific sentence (max 30 words) for a cold email opening. Mention one concrete thing noticed about THIS specific business's site. Sound human. E.g.: 'I noticed [Company] offers [service] but visitors can\\'t book directly from the homepage.' Leave blank string if nothing specific found."
 }}
 
 Rules:
@@ -156,7 +185,8 @@ Rules:
 - cta_strength: "strong" = prominent clear call-to-action, "weak" = vague or buried CTA, "none" = no CTA
 - lead_capture_forms: true if any form captures name/email
 - booking_method: "calendar" if online calendar booking exists, else best match
-
+- personalized_opener: must reference the specific company name "{company_name}" if provided
+{news_section}
 Website content:
 {combined}
 
@@ -167,7 +197,7 @@ Return valid JSON only. No explanation. No markdown."""
         client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
         message = await client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=400,
+            max_tokens=500,
             messages=[{"role": "user", "content": prompt}],
         )
         raw = message.content[0].text.strip()
@@ -233,8 +263,17 @@ async def scan_website(lead: "Lead", db: AsyncSession) -> Optional["WebsiteScan"
         logger.warning("[SCAN] No pages fetched for lead %s (%s)", lead.email, lead.website)
         return None
 
-    scan_data = await analyze_with_claude(pages_text)
+    company_name = lead.company or ""
+    domain = lead.website or ""
+    news_snippet = await fetch_company_news(company_name, domain) if company_name else ""
+
+    scan_data = await analyze_with_claude(pages_text, company_name=company_name, news_snippet=news_snippet)
     problem_key, hook_text = detect_problem(scan_data)
+
+    # Use personalized opener from Claude if available, else fall back to generic hook_text
+    personalized_opener = (scan_data.get("personalized_opener") or "").strip()
+    if personalized_opener:
+        hook_text = personalized_opener
 
     ws = WebsiteScan(
         id=str(uuid.uuid4()),

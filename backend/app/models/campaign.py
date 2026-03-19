@@ -19,6 +19,8 @@ class Campaign(Base):
     sender_company: Mapped[Optional[str]] = mapped_column(String(255))
     daily_limit: Mapped[int] = mapped_column(Integer, default=30)
     min_score: Mapped[int] = mapped_column(Integer, default=50)
+    send_hour: Mapped[int] = mapped_column(Integer, default=9)
+    send_minute: Mapped[int] = mapped_column(Integer, default=0)
     target_industry: Mapped[Optional[str]] = mapped_column(String(100))
     calendly_link: Mapped[Optional[str]] = mapped_column(String(500))
     created_at: Mapped[datetime] = mapped_column(

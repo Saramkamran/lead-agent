@@ -122,6 +122,28 @@ async def start_campaign(
     return await _campaign_with_lead_count(campaign, db)
 
 
+@router.delete("/{campaign_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_campaign(
+    campaign_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    result = await db.execute(select(Campaign).where(Campaign.id == campaign_id))
+    campaign = result.scalar_one_or_none()
+    if not campaign:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "Campaign not found", "code": "NOT_FOUND"},
+        )
+    if campaign.status == "active":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "Pause the campaign before deleting", "code": "CAMPAIGN_ACTIVE"},
+        )
+    await db.delete(campaign)
+    await db.flush()
+
+
 @router.post("/{campaign_id}/pause", response_model=CampaignResponse)
 async def pause_campaign(
     campaign_id: str,

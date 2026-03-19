@@ -11,6 +11,8 @@ class CampaignCreate(BaseModel):
     sender_company: Optional[str] = None
     daily_limit: int = 30
     min_score: int = 50
+    send_hour: int = 9
+    send_minute: int = 0
     target_industry: Optional[str] = None
     calendly_link: Optional[str] = None
 
@@ -22,6 +24,8 @@ class CampaignUpdate(BaseModel):
     sender_company: Optional[str] = None
     daily_limit: Optional[int] = None
     min_score: Optional[int] = None
+    send_hour: Optional[int] = None
+    send_minute: Optional[int] = None
     target_industry: Optional[str] = None
     calendly_link: Optional[str] = None
 
@@ -35,6 +39,8 @@ class CampaignResponse(BaseModel):
     sender_company: Optional[str] = None
     daily_limit: int
     min_score: int
+    send_hour: int = 9
+    send_minute: int = 0
     target_industry: Optional[str] = None
     calendly_link: Optional[str] = None
     created_at: datetime

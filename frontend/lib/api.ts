@@ -37,10 +37,25 @@ export const login = (email: string, password: string) =>
   });
 
 export const register = (email: string, password: string) =>
-  apiFetch<{ id: string; email: string }>("/auth/register", {
+  apiFetch<{ id: string; email: string; role: string }>("/auth/register", {
     method: "POST",
     body: JSON.stringify({ email, password }),
   });
+
+// ── Role helpers ──────────────────────────────────────────────────────────────
+export function getTokenRole(): string {
+  if (typeof window === "undefined") return "user";
+  const token = localStorage.getItem("token");
+  if (!token) return "user";
+  try {
+    const payload = JSON.parse(atob(token.split(".")[1]));
+    return payload.role || "user";
+  } catch {
+    return "user";
+  }
+}
+
+export const isAdmin = () => getTokenRole() === "admin";
 
 // ── Leads ─────────────────────────────────────────────────────────────────────
 export interface Lead {
@@ -155,6 +170,10 @@ export const importLeads = (file: File) => {
 export const getLeadStats = () =>
   apiFetch<{ status_counts: Record<string, number> }>("/leads/stats");
 
+// ── Leads additional ──────────────────────────────────────────────────────────
+export const deleteLeadMessages = (id: string) =>
+  apiFetch<void>(`/leads/${id}/messages`, { method: "DELETE" });
+
 // ── Campaigns ─────────────────────────────────────────────────────────────────
 export interface Campaign {
   id: string;
@@ -162,6 +181,8 @@ export interface Campaign {
   status: string;
   daily_limit: number;
   min_score: number;
+  send_hour: number;
+  send_minute: number;
   created_at: string;
   lead_count: number;
 }
@@ -181,6 +202,9 @@ export const startCampaign = (id: string) =>
 
 export const pauseCampaign = (id: string) =>
   apiFetch<Campaign>(`/campaigns/${id}/pause`, { method: "POST" });
+
+export const deleteCampaign = (id: string) =>
+  apiFetch<void>(`/campaigns/${id}`, { method: "DELETE" });
 
 // ── Conversations ──────────────────────────────────────────────────────────────
 export const getConversations = () =>
@@ -278,3 +302,35 @@ export const triggerLeadScan = (id: string) =>
 
 export const processLead = (id: string) =>
   apiFetch<Lead>(`/leads/${id}/process`, { method: "POST" });
+
+// ── Admin ─────────────────────────────────────────────────────────────────────
+export interface AdminUser {
+  id: string;
+  email: string;
+  role: string;
+  is_active: boolean;
+  created_at: string;
+}
+
+export const getAdminUsers = () => apiFetch<AdminUser[]>("/admin/users");
+
+export const createAdminUser = (email: string, password: string) =>
+  apiFetch<AdminUser>("/admin/users", {
+    method: "POST",
+    body: JSON.stringify({ email, password }),
+  });
+
+export const toggleAdminUser = (id: string, is_active: boolean) =>
+  apiFetch<AdminUser>(`/admin/users/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ is_active }),
+  });
+
+export const deleteAdminUser = (id: string) =>
+  apiFetch<void>(`/admin/users/${id}`, { method: "DELETE" });
+
+export const runSmokeTest = () =>
+  apiFetch<{ passed: number; failed: number; results: Array<{ check: string; passed: boolean; error?: string; detail?: string }> }>(
+    "/admin/smoke-test",
+    { method: "POST" },
+  );
