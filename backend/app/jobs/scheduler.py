@@ -106,7 +106,7 @@ async def job_score_new_leads() -> None:
         scored = 0
         for lead in leads:
             try:
-                score, reason = await score_lead(lead)
+                score, reason = await score_lead(lead, db=db)
                 lead.score = score
                 lead.score_reason = reason
 

@@ -28,6 +28,13 @@ class WebsiteScan(Base):
     booking_method: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     detected_problem: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     hook_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Enhanced intelligence fields (added in 0007)
+    pain_points: Mapped[Optional[str]] = mapped_column(Text, nullable=True)       # JSON array of strings
+    growth_signals: Mapped[Optional[str]] = mapped_column(Text, nullable=True)    # JSON array of strings
+    trust_signals: Mapped[Optional[str]] = mapped_column(Text, nullable=True)     # JSON array of strings
+    social_links: Mapped[Optional[str]] = mapped_column(Text, nullable=True)      # JSON dict {platform: url}
+    urgency_level: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)  # low / medium / high
+    connection_angle: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # best personalized hook
     scanned_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

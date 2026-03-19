@@ -1,9 +1,10 @@
 import json
 import logging
+import re
+import urllib.parse
 import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional
-from urllib.parse import urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
@@ -31,6 +32,16 @@ HOOK_TEXTS: dict[str, str] = {
 # Keywords used to find priority sub-pages
 _PRIORITY_KEYWORDS = ["service", "pricing", "price", "contact", "about", "booking", "book", "offering"]
 
+# Social media platform detection patterns
+_SOCIAL_PATTERNS: dict[str, list[str]] = {
+    "linkedin": ["linkedin.com/company/", "linkedin.com/in/"],
+    "facebook": ["facebook.com/", "fb.com/"],
+    "instagram": ["instagram.com/"],
+    "twitter": ["twitter.com/", "x.com/"],
+    "tiktok": ["tiktok.com/@"],
+    "youtube": ["youtube.com/channel/", "youtube.com/user/", "youtube.com/@"],
+}
+
 
 def _normalise_url(url: str) -> str:
     if not url:
@@ -43,11 +54,16 @@ def _normalise_url(url: str) -> str:
 
 def _same_domain(base: str, link: str) -> bool:
     try:
-        base_host = urlparse(base).netloc.lower().lstrip("www.")
-        link_host = urlparse(link).netloc.lower().lstrip("www.")
+        base_host = urlparse_netloc(base)
+        link_host = urlparse_netloc(link)
         return link_host == base_host or link_host == ""
     except Exception:
         return False
+
+
+def urlparse_netloc(url: str) -> str:
+    from urllib.parse import urlparse
+    return urlparse(url).netloc.lower().lstrip("www.")
 
 
 def _page_to_text(html: str, max_chars: int = 3000) -> str:
@@ -55,22 +71,41 @@ def _page_to_text(html: str, max_chars: int = 3000) -> str:
     for tag in soup(["script", "style", "noscript", "head"]):
         tag.decompose()
     text = soup.get_text(separator=" ", strip=True)
-    # Collapse whitespace
-    import re
     text = re.sub(r"\s+", " ", text).strip()
     return text[:max_chars]
 
 
-async def fetch_pages(url: str) -> list[str]:
+def _extract_social_links(html: str) -> dict[str, str]:
+    """Extract social media profile URLs from website HTML."""
+    soup = BeautifulSoup(html, "html.parser")
+    found: dict[str, str] = {}
+    for a in soup.find_all("a", href=True):
+        href = a["href"].strip()
+        if not href.startswith("http"):
+            continue
+        href_lower = href.lower()
+        for platform, patterns in _SOCIAL_PATTERNS.items():
+            if platform not in found:
+                for pattern in patterns:
+                    if pattern in href_lower:
+                        found[platform] = href
+                        break
+    return found
+
+
+async def fetch_pages(url: str) -> tuple[list[str], str]:
     """
-    Fetch homepage + up to 2 priority sub-pages.
-    Returns list of plain-text strings (up to 3 items).
+    Fetch homepage + up to 3 priority sub-pages.
+    Returns (list of plain-text strings, raw homepage HTML).
     """
     url = _normalise_url(url)
     if not url:
-        return []
+        return [], ""
+
+    from urllib.parse import urljoin, urlparse
 
     pages_text: list[str] = []
+    homepage_html = ""
 
     try:
         async with httpx.AsyncClient(
@@ -78,7 +113,6 @@ async def fetch_pages(url: str) -> list[str]:
             follow_redirects=True,
             headers={"User-Agent": "Mozilla/5.0 (compatible; LeadScanner/1.0)"},
         ) as client:
-            # 1. Fetch homepage
             try:
                 resp = await client.get(url)
                 resp.raise_for_status()
@@ -86,9 +120,9 @@ async def fetch_pages(url: str) -> list[str]:
                 pages_text.append(_page_to_text(homepage_html))
             except Exception as e:
                 logger.warning("[SCAN] Failed to fetch homepage %s: %s", url, e)
-                return []
+                return [], ""
 
-            # 2. Find priority sub-pages from homepage links
+            # Find priority sub-pages from homepage links
             soup = BeautifulSoup(homepage_html, "html.parser")
             candidate_links: list[str] = []
             for a in soup.find_all("a", href=True):
@@ -103,10 +137,10 @@ async def fetch_pages(url: str) -> list[str]:
                     if full not in candidate_links:
                         candidate_links.append(full)
 
-            # 3. Fetch up to 2 sub-pages
+            # Fetch up to 3 sub-pages (expanded from 2)
             fetched_sub = 0
             for link in candidate_links:
-                if fetched_sub >= 2:
+                if fetched_sub >= 3:
                     break
                 try:
                     r = await client.get(link)
@@ -118,56 +152,117 @@ async def fetch_pages(url: str) -> list[str]:
 
     except Exception as e:
         logger.error("[SCAN] Unexpected error fetching %s: %s", url, e)
-        return []
+        return [], ""
 
-    return pages_text
+    return pages_text, homepage_html
 
 
-async def fetch_company_news(company_name: str, domain: str) -> str:
+async def _duckduckgo_search(query: str) -> list[str]:
     """
-    Fetch a short news snippet about the company using DuckDuckGo Instant Answer API.
-    Returns a snippet (up to 250 chars) or empty string on any error.
+    Query DuckDuckGo Instant Answer API and return text snippets.
+    Returns up to ~5 snippet strings, empty list on any error.
     """
     try:
-        query = f'"{company_name}" {domain}'
-        url = f"https://api.duckduckgo.com/?q={query}&format=json&no_redirect=1"
+        encoded = urllib.parse.quote(query)
+        url = f"https://api.duckduckgo.com/?q={encoded}&format=json&no_redirect=1&no_html=1"
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0 (compatible; LeadScanner/1.0)"})
             data = resp.json()
-            abstract = data.get("AbstractText", "").strip()
-            return abstract[:250] if abstract else ""
+
+        snippets: list[str] = []
+        if data.get("AbstractText"):
+            snippets.append(data["AbstractText"][:350])
+        for topic in data.get("RelatedTopics", [])[:6]:
+            if isinstance(topic, dict) and topic.get("Text"):
+                snippets.append(topic["Text"][:150])
+        return snippets
     except Exception as e:
-        logger.debug("[SCAN] News fetch failed for %s: %s", company_name, e)
-        return ""
+        logger.debug("[SCAN] DuckDuckGo search failed for '%s': %s", query, e)
+        return []
 
 
-async def analyze_with_claude(pages_text: list[str], company_name: str = "", news_snippet: str = "") -> dict:
+async def gather_web_intelligence(company_name: str, website: str, homepage_html: str) -> dict:
     """
-    Send page text to Claude claude-haiku-4-5-20251001 and extract structured website data.
-    Returns a dict with detection fields; falls back to safe defaults on error.
+    Gather external intelligence about the company:
+    - DuckDuckGo search for company news / recent activity
+    - DuckDuckGo search for company reviews / reputation
+    - Social media links extracted from the website HTML
+
+    Returns dict with keys: news_snippets, review_snippets, social_links
+    """
+    domain = ""
+    if website:
+        from urllib.parse import urlparse
+        domain = urlparse(_normalise_url(website)).netloc.lstrip("www.")
+
+    # Run searches in parallel
+    news_q = f'"{company_name}" {domain} news' if company_name else domain
+    reviews_q = f'"{company_name}" reviews ratings' if company_name else ""
+
+    results = await _duckduckgo_search(news_q) if news_q else []
+    review_results = await _duckduckgo_search(reviews_q) if reviews_q else []
+
+    social_links = _extract_social_links(homepage_html) if homepage_html else {}
+
+    return {
+        "news_snippets": results,
+        "review_snippets": review_results,
+        "social_links": social_links,
+    }
+
+
+async def analyze_with_claude(
+    pages_text: list[str],
+    company_name: str = "",
+    web_intel: Optional[dict] = None,
+) -> dict:
+    """
+    Send all gathered intelligence to Claude claude-haiku-4-5-20251001.
+    Returns a rich dict with website analysis, pain points, growth signals,
+    trust signals, urgency, and connection angle.
+    Falls back to safe defaults on error.
     """
     if not settings.ANTHROPIC_API_KEY:
         logger.warning("[SCAN] ANTHROPIC_API_KEY not set — using defaults")
         return _default_scan_data()
 
-    combined = "\n\n---\n\n".join(
+    # Build website section
+    website_section = "\n\n---\n\n".join(
         f"[Page {i+1}]\n{text}" for i, text in enumerate(pages_text)
     )
 
-    news_section = ""
-    if news_snippet:
-        news_section = f"""
-Recent company news (use only if relevant and specific to this business):
-{news_snippet}
+    # Build research section
+    intel = web_intel or {}
+    news_snippets = intel.get("news_snippets", [])
+    review_snippets = intel.get("review_snippets", [])
+    social_links = intel.get("social_links", {})
 
-If the news contains a recent event (funding, expansion, new product, award), reference it in the personalized_opener. Skip it if news is empty or irrelevant.
-"""
+    research_section = ""
+    if news_snippets:
+        combined_news = " | ".join(news_snippets[:4])[:500]
+        research_section += f"\nNews / recent activity about {company_name}:\n{combined_news}\n"
+    if review_snippets:
+        combined_reviews = " | ".join(review_snippets[:3])[:400]
+        research_section += f"\nReviews / reputation:\n{combined_reviews}\n"
+    if social_links:
+        platforms = ", ".join(social_links.keys())
+        research_section += f"\nSocial media presence: {platforms}\n"
 
-    prompt = f"""Analyse the following website content and return a JSON object with these exact fields:
+    prompt = f"""You are analyzing a business prospect for cold outreach. Extract structured intelligence from their website and research data.
+
+Company name: {company_name or "unknown"}
+
+WEBSITE CONTENT:
+{website_section}
+
+EXTERNAL RESEARCH:
+{research_section if research_section else "No external research available."}
+
+Return a JSON object with EXACTLY these fields:
 
 {{
-  "business_type": "brief description of what this company does",
-  "services_list": "comma-separated list of services/products offered",
+  "business_type": "brief description of what this company does (1 sentence)",
+  "services_list": "comma-separated list of main services/products",
   "has_pricing_page": true or false,
   "has_booking_system": true or false,
   "has_contact_form": true or false,
@@ -175,33 +270,34 @@ If the news contains a recent event (funding, expansion, new product, award), re
   "lead_capture_forms": true or false,
   "design_quality": "basic" or "standard" or "professional",
   "booking_method": "phone_only" or "email_only" or "form_only" or "calendar" or "none",
-  "personalized_opener": "One specific sentence (max 30 words) for a cold email opening. Mention one concrete thing noticed about THIS specific business's site. Sound human. E.g.: 'I noticed [Company] offers [service] but visitors can\\'t book directly from the homepage.' Leave blank string if nothing specific found."
+  "pain_points": ["specific problem 1 observed on their site", "specific problem 2", "specific problem 3"],
+  "growth_signals": ["growth indicator 1 from news/research", "growth indicator 2"],
+  "trust_signals": ["social proof signal 1", "signal 2"],
+  "urgency_level": "low" or "medium" or "high",
+  "connection_angle": "The single most specific and compelling observation about THIS business to open a cold email. Reference something concrete — a specific gap, recent news, or opportunity. Max 35 words. Sound human.",
+  "personalized_opener": "One sentence (max 30 words) cold email opener mentioning something specific about {company_name}'s site. E.g.: 'I noticed [Company] offers [service] but visitors can\\'t book directly from the homepage.'"
 }}
 
 Rules:
-- has_booking_system: true if there is a Calendly, Acuity, booking widget, or "Book Now" button
-- has_pricing_page: true if prices or packages are listed
-- has_contact_form: true if there is any web form for inquiries
-- cta_strength: "strong" = prominent clear call-to-action, "weak" = vague or buried CTA, "none" = no CTA
-- lead_capture_forms: true if any form captures name/email
-- booking_method: "calendar" if online calendar booking exists, else best match
-- personalized_opener: must reference the specific company name "{company_name}" if provided
-{news_section}
-Website content:
-{combined}
-
-Return valid JSON only. No explanation. No markdown."""
+- has_booking_system: true only if there is a live Calendly, Acuity, booking widget, or 'Book Now' button
+- urgency_level 'high': business has no booking system AND no pricing AND weak/no CTA
+- urgency_level 'medium': missing 1-2 of the above
+- urgency_level 'low': mostly set up, minor gaps only
+- pain_points: be specific to THIS business, not generic (e.g. "No way to book appointments online" not "missing features")
+- growth_signals: empty array if no signals found — do NOT invent signals
+- trust_signals: look for reviews mentions, years in business, certifications, client counts
+- connection_angle must mention {company_name} by name if provided
+- Return valid JSON only. No explanation. No markdown."""
 
     try:
         import anthropic
         client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
         message = await client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=500,
+            max_tokens=800,
             messages=[{"role": "user", "content": prompt}],
         )
         raw = message.content[0].text.strip()
-        # Strip markdown code fences if present
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):
@@ -227,6 +323,12 @@ def _default_scan_data() -> dict:
         "lead_capture_forms": False,
         "design_quality": None,
         "booking_method": "none",
+        "pain_points": [],
+        "growth_signals": [],
+        "trust_signals": [],
+        "urgency_level": "medium",
+        "connection_angle": "",
+        "personalized_opener": "",
     }
 
 
@@ -249,8 +351,11 @@ def detect_problem(scan_data: dict) -> tuple[str, str]:
 
 async def scan_website(lead: "Lead", db: AsyncSession) -> Optional["WebsiteScan"]:
     """
-    Full pipeline: fetch pages → analyse with Claude → detect problem → save WebsiteScan.
-    Returns the saved WebsiteScan object, or None if fetching failed entirely.
+    Full intelligence pipeline:
+    1. Fetch website pages (homepage + up to 3 sub-pages)
+    2. Gather web intelligence (news search, reviews, social links)
+    3. Analyze everything with Claude — pain points, growth signals, urgency
+    4. Save enriched WebsiteScan to DB.
     """
     from app.models.website_scan import WebsiteScan
 
@@ -258,22 +363,38 @@ async def scan_website(lead: "Lead", db: AsyncSession) -> Optional["WebsiteScan"
         logger.warning("[SCAN] Lead %s has no website — skipping scan", lead.email)
         return None
 
-    pages_text = await fetch_pages(lead.website)
+    pages_text, homepage_html = await fetch_pages(lead.website)
     if not pages_text:
         logger.warning("[SCAN] No pages fetched for lead %s (%s)", lead.email, lead.website)
         return None
 
     company_name = lead.company or ""
-    domain = lead.website or ""
-    news_snippet = await fetch_company_news(company_name, domain) if company_name else ""
 
-    scan_data = await analyze_with_claude(pages_text, company_name=company_name, news_snippet=news_snippet)
+    # Gather external intelligence in parallel with a gather call
+    web_intel = await gather_web_intelligence(company_name, lead.website, homepage_html)
+
+    # Deep Claude analysis with all gathered data
+    scan_data = await analyze_with_claude(
+        pages_text,
+        company_name=company_name,
+        web_intel=web_intel,
+    )
+
     problem_key, hook_text = detect_problem(scan_data)
 
-    # Use personalized opener from Claude if available, else fall back to generic hook_text
+    # Use connection_angle as hook if available; fall back to personalized_opener; then generic hook
+    connection_angle = (scan_data.get("connection_angle") or "").strip()
     personalized_opener = (scan_data.get("personalized_opener") or "").strip()
-    if personalized_opener:
+    if connection_angle:
+        hook_text = connection_angle
+    elif personalized_opener:
         hook_text = personalized_opener
+
+    # Serialize list/dict fields to JSON strings
+    pain_points_json = json.dumps(scan_data.get("pain_points") or [])
+    growth_signals_json = json.dumps(scan_data.get("growth_signals") or [])
+    trust_signals_json = json.dumps(scan_data.get("trust_signals") or [])
+    social_links_json = json.dumps(web_intel.get("social_links") or {})
 
     ws = WebsiteScan(
         id=str(uuid.uuid4()),
@@ -289,9 +410,23 @@ async def scan_website(lead: "Lead", db: AsyncSession) -> Optional["WebsiteScan"
         booking_method=scan_data.get("booking_method"),
         detected_problem=problem_key,
         hook_text=hook_text,
+        pain_points=pain_points_json,
+        growth_signals=growth_signals_json,
+        trust_signals=trust_signals_json,
+        social_links=social_links_json,
+        urgency_level=scan_data.get("urgency_level") or "medium",
+        connection_angle=connection_angle or personalized_opener,
         scanned_at=datetime.now(timezone.utc),
     )
     db.add(ws)
     await db.flush()
-    logger.info("[SCAN] Scanned %s — problem: %s", lead.website, problem_key)
+    logger.info(
+        "[SCAN] %s — problem: %s | urgency: %s | pain_points: %d | growth_signals: %d | social: %s",
+        lead.website,
+        problem_key,
+        ws.urgency_level,
+        len(scan_data.get("pain_points") or []),
+        len(scan_data.get("growth_signals") or []),
+        ", ".join(web_intel.get("social_links", {}).keys()) or "none",
+    )
     return ws
