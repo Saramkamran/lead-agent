@@ -150,10 +150,11 @@ async def send_email(
         return ""
 
 
-async def poll_imap_account(creds: dict, handle_reply_callback) -> None:
+async def poll_imap_account(creds: dict, handle_reply_callback, expected_from_emails: set | None = None) -> None:
     """
     Poll one IMAP account for unseen messages and call handle_reply_callback for each.
     creds keys: host, port, user, pass, folder, poll_interval
+    If expected_from_emails is provided, only searches for replies from those addresses.
     Never raises — exceptions are caught and logged.
     """
     host = creds["host"]
@@ -172,10 +173,20 @@ async def poll_imap_account(creds: dict, handle_reply_callback) -> None:
             await imap.login(user, password)
             await imap.select(folder)
 
-            # Only fetch UNSEEN emails from the last 30 days — skips old unread notifications
-            since = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%d-%b-%Y")
-            _, data = await imap.search(f"UNSEEN SINCE {since}")
-            uid_list = data[0].split() if data and data[0] else []
+            # Search only for replies from leads we actually outreached to
+            uid_set = set()
+            if expected_from_emails:
+                for addr in expected_from_emails:
+                    _, data = await imap.search(f'UNSEEN FROM "{addr}"')
+                    if data and data[0]:
+                        uid_set.update(data[0].split())
+            else:
+                # Fallback: last 2 days if no lead emails known
+                since = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%d-%b-%Y")
+                _, data = await imap.search(f"UNSEEN SINCE {since}")
+                if data and data[0]:
+                    uid_set.update(data[0].split())
+            uid_list = list(uid_set)
 
             logger.info("[IMAP] Checked %s (%s) — %d unseen message(s)", host, user, len(uid_list))
 

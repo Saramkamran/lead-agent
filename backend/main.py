@@ -31,6 +31,7 @@ async def _poll_all_imap_sources() -> None:
     """
     from sqlalchemy import select
     from app.models.outreach_account import OutreachAccount
+    from app.models.lead import Lead
     from app.core.crypto import decrypt_secret
 
     logger.info("[IMAP] Multi-account polling loop started (interval: %ds)", settings.IMAP_POLL_INTERVAL_SECONDS)
@@ -45,6 +46,17 @@ async def _poll_all_imap_sources() -> None:
                     select(OutreachAccount).where(OutreachAccount.is_active.is_(True))
                 )
                 accounts = list(result.scalars().all())
+
+                # Load all lead emails that are in active outreach — only poll for these
+                leads_result = await db.execute(
+                    select(Lead.email, Lead.outreach_account_id).where(
+                        Lead.status.in_(["contacted", "follow_up_1", "follow_up_2", "follow_up_3"]),
+                        Lead.email.isnot(None),
+                    )
+                )
+                lead_emails_by_account: dict = {}
+                for email_addr, account_id in leads_result.all():
+                    lead_emails_by_account.setdefault(account_id, set()).add(email_addr.lower())
 
             for account in accounts:
                 try:
@@ -61,6 +73,7 @@ async def _poll_all_imap_sources() -> None:
                         "folder": settings.IMAP_REPLY_FOLDER,
                     },
                     handle_reply_callback=handle_reply,
+                    expected_from_emails=lead_emails_by_account.get(account.id),
                 ))
 
             if not accounts:
