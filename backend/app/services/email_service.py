@@ -163,87 +163,93 @@ async def poll_imap_account(creds: dict, handle_reply_callback) -> None:
     folder = creds.get("folder", "INBOX")
 
     try:
-        _imap_ssl = ssl.create_default_context()
-        _imap_ssl.check_hostname = False
-        _imap_ssl.verify_mode = ssl.CERT_NONE
-        imap = aioimaplib.IMAP4_SSL(host=host, port=port, ssl_context=_imap_ssl)
-        await imap.wait_hello_from_server()
-        await imap.login(user, password)
-        await imap.select(folder)
+        async with asyncio.timeout(60):
+            _imap_ssl = ssl.create_default_context()
+            _imap_ssl.check_hostname = False
+            _imap_ssl.verify_mode = ssl.CERT_NONE
+            imap = aioimaplib.IMAP4_SSL(host=host, port=port, ssl_context=_imap_ssl)
+            await imap.wait_hello_from_server()
+            await imap.login(user, password)
+            await imap.select(folder)
 
-        # Try narrow search first — only fetch actual replies (have In-Reply-To header)
-        try:
-            _, data = await imap.search('UNSEEN HEADER "In-Reply-To" ""')
-            uid_list = data[0].split() if data and data[0] else []
-        except Exception:
-            # Fallback: all UNSEEN (some IMAP servers don't support HEADER search)
-            _, data = await imap.search("UNSEEN")
-            uid_list = data[0].split() if data and data[0] else []
-
-        logger.info("[IMAP] Checked %s (%s) — %d unseen message(s)", host, user, len(uid_list))
-
-        for uid in uid_list:
-            uid_str = uid.decode() if isinstance(uid, bytes) else str(uid)
+            # Try narrow search first — only fetch actual replies (have In-Reply-To header)
             try:
-                _, msg_data = await imap.fetch(uid_str, "(RFC822)")
-                raw = None
-                for part in msg_data:
-                    if isinstance(part, (bytes, bytearray)) and len(part) > 100:
-                        raw = bytes(part)
-                        break
-                if not raw:
-                    logger.warning("[IMAP] No raw data for seq %s on %s — skipping", uid_str, host)
-                    continue
+                _, data = await imap.search('UNSEEN HEADER "In-Reply-To" ""')
+                uid_list = data[0].split() if data and data[0] else []
+            except Exception:
+                # Fallback: all UNSEEN (some IMAP servers don't support HEADER search)
+                _, data = await imap.search("UNSEEN")
+                uid_list = data[0].split() if data and data[0] else []
 
-                parser = email.parser.BytesParser(policy=email.policy.default)
-                parsed = parser.parsebytes(raw)
+            logger.info("[IMAP] Checked %s (%s) — %d unseen message(s)", host, user, len(uid_list))
 
-                from_field = parsed.get("From", "")
-                from_email_addr = email.utils.parseaddr(from_field)[1].strip().lower()
-                subject = parsed.get("Subject", "")
-                msg_id = parsed.get("Message-ID", "").strip()
-                in_reply_to = parsed.get("In-Reply-To", "").strip()
-                references = parsed.get("References", "").strip()
-
-                body = ""
-                if parsed.is_multipart():
-                    for part in parsed.walk():
-                        ct = part.get_content_type()
-                        if ct == "text/plain":
-                            body = part.get_content()
+            for uid in uid_list:
+                uid_str = uid.decode() if isinstance(uid, bytes) else str(uid)
+                try:
+                    _, msg_data = await imap.fetch(uid_str, "(RFC822)")
+                    raw = None
+                    for part in msg_data:
+                        if isinstance(part, (bytes, bytearray)) and len(part) > 100:
+                            raw = bytes(part)
                             break
-                        elif ct == "text/html" and not body:
-                            body = BeautifulSoup(part.get_content(), "html.parser").get_text(separator="\n").strip()
-                else:
-                    ct = parsed.get_content_type()
-                    if ct == "text/plain":
-                        body = parsed.get_content()
-                    elif ct == "text/html":
-                        body = BeautifulSoup(parsed.get_content(), "html.parser").get_text(separator="\n").strip()
+                    if not raw:
+                        logger.warning("[IMAP] No raw data for seq %s on %s — skipping", uid_str, host)
+                        continue
 
-                reply_data = {
-                    "from_email": from_email_addr,
-                    "subject": subject,
-                    "body": body.strip() if body else "",
-                    "message_id": msg_id,
-                    "in_reply_to": in_reply_to,
-                    "references": references,
-                }
+                    parser = email.parser.BytesParser(policy=email.policy.default)
+                    parsed = parser.parsebytes(raw)
 
-                matched = await handle_reply_callback(reply_data)
-                if matched:
-                    await imap.store(uid_str, "+FLAGS", "\\Seen")
-                    logger.info("[IMAP] Processed and marked Seen: seq=%s from=%s on %s", uid_str, from_email_addr, host)
-                else:
-                    logger.info("[IMAP] No campaign match — leaving unseen: seq=%s from=%s on %s", uid_str, from_email_addr, host)
+                    from_field = parsed.get("From", "")
+                    from_email_addr = email.utils.parseaddr(from_field)[1].strip().lower()
+                    subject = parsed.get("Subject", "")
+                    msg_id = parsed.get("Message-ID", "").strip()
+                    in_reply_to = parsed.get("In-Reply-To", "").strip()
+                    references = parsed.get("References", "").strip()
 
-            except Exception as e:
-                logger.error("[IMAP] Error processing uid %s on %s: %s", uid_str, host, e)
+                    body = ""
+                    if parsed.is_multipart():
+                        for part in parsed.walk():
+                            ct = part.get_content_type()
+                            if ct == "text/plain":
+                                body = part.get_content()
+                                break
+                            elif ct == "text/html" and not body:
+                                body = BeautifulSoup(part.get_content(), "html.parser").get_text(separator="\n").strip()
+                    else:
+                        ct = parsed.get_content_type()
+                        if ct == "text/plain":
+                            body = parsed.get_content()
+                        elif ct == "text/html":
+                            body = BeautifulSoup(parsed.get_content(), "html.parser").get_text(separator="\n").strip()
 
-        await imap.logout()
+                    reply_data = {
+                        "from_email": from_email_addr,
+                        "subject": subject,
+                        "body": body.strip() if body else "",
+                        "message_id": msg_id,
+                        "in_reply_to": in_reply_to,
+                        "references": references,
+                    }
+
+                    matched = await handle_reply_callback(reply_data)
+                    if matched:
+                        await imap.store(uid_str, "+FLAGS", "\\Seen")
+                        logger.info("[IMAP] Processed and marked Seen: seq=%s from=%s on %s", uid_str, from_email_addr, host)
+                    else:
+                        logger.info("[IMAP] No campaign match — leaving unseen: seq=%s from=%s on %s", uid_str, from_email_addr, host)
+
+                except Exception as e:
+                    logger.error("[IMAP] Error processing uid %s on %s: %s — %r", uid_str, host, type(e).__name__, e, exc_info=True)
+
+            await imap.logout()
 
     except Exception as e:
-        logger.error("[IMAP] Poll cycle error on %s (%s) at %s: %s", host, user, datetime.now(timezone.utc).isoformat(), e)
+        logger.error(
+            "[IMAP] Poll cycle error on %s (%s) at %s: %s — %r",
+            host, user, datetime.now(timezone.utc).isoformat(),
+            type(e).__name__, e,
+            exc_info=True,
+        )
 
 
 async def poll_imap_replies(handle_reply_callback) -> None:
