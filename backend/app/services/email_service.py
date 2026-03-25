@@ -172,14 +172,9 @@ async def poll_imap_account(creds: dict, handle_reply_callback) -> None:
             await imap.login(user, password)
             await imap.select(folder)
 
-            # Try narrow search first — only fetch actual replies (have In-Reply-To header)
-            try:
-                _, data = await imap.search('UNSEEN HEADER "In-Reply-To" ""')
-                uid_list = data[0].split() if data and data[0] else []
-            except Exception:
-                # Fallback: all UNSEEN (some IMAP servers don't support HEADER search)
-                _, data = await imap.search("UNSEEN")
-                uid_list = data[0].split() if data and data[0] else []
+            # Fetch all UNSEEN messages — Gmail does not support HEADER search criteria
+            _, data = await imap.search("UNSEEN")
+            uid_list = data[0].split() if data and data[0] else []
 
             logger.info("[IMAP] Checked %s (%s) — %d unseen message(s)", host, user, len(uid_list))
 
