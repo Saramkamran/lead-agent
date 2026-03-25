@@ -4,7 +4,7 @@ import email.policy
 import email.utils
 import logging
 import ssl
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from email.message import EmailMessage
 from uuid import uuid4
 
@@ -172,8 +172,9 @@ async def poll_imap_account(creds: dict, handle_reply_callback) -> None:
             await imap.login(user, password)
             await imap.select(folder)
 
-            # Fetch all UNSEEN messages — Gmail does not support HEADER search criteria
-            _, data = await imap.search("UNSEEN")
+            # Only fetch UNSEEN emails from the last 30 days — skips old unread notifications
+            since = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%d-%b-%Y")
+            _, data = await imap.search(f"UNSEEN SINCE {since}")
             uid_list = data[0].split() if data and data[0] else []
 
             logger.info("[IMAP] Checked %s (%s) — %d unseen message(s)", host, user, len(uid_list))
