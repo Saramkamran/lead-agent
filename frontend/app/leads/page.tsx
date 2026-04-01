@@ -33,9 +33,10 @@ const STATUS_OPTIONS = [
   "replied", "booked", "not_interested", "disqualified",
 ];
 
-function ScanBadge({ status }: { status?: string }) {
+function ScanBadge({ status, reusedFrom }: { status?: string; reusedFrom?: string }) {
   if (!status || status === "pending") return <Badge variant="gray">Pending</Badge>;
   if (status === "scanning") return <Badge variant="gray">Scanning…</Badge>;
+  if (status === "success" && reusedFrom) return <Badge variant="blue">Already Scanned</Badge>;
   if (status === "success") return <Badge variant="green">Scanned</Badge>;
   if (status === "failed") return <Badge variant="gray">Scan failed</Badge>;
   return null;
@@ -464,7 +465,7 @@ export default function LeadsPage() {
               <div className="flex items-center gap-3 flex-wrap">
                 <ScoreBadge score={selectedLead.score} />
                 <StatusBadge status={selectedLead.status} />
-                <ScanBadge status={selectedLead.scan_status} />
+                <ScanBadge status={selectedLead.scan_status} reusedFrom={scan?.reused_from} />
                 {selectedLead.reply_category && (
                   <span className="text-xs bg-purple-50 text-purple-700 border border-purple-200 rounded-full px-2 py-0.5">
                     {selectedLead.reply_category.replace(/_/g, " ")}
@@ -490,6 +491,11 @@ export default function LeadsPage() {
                 </div>
                 {scan ? (
                   <div className="bg-gray-50 rounded-lg p-3 space-y-2 text-sm">
+                    {scan.reused_from && (
+                      <p className="text-xs text-blue-600 bg-blue-50 border border-blue-200 rounded px-2 py-1">
+                        Website already scanned — scan data reused from another lead with the same website.
+                      </p>
+                    )}
                     {scan.hook_text && (
                       <p className="text-gray-700 italic border-l-2 border-indigo-400 pl-3">
                         &ldquo;{scan.hook_text}&rdquo;

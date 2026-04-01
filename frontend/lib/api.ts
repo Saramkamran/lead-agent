@@ -97,6 +97,7 @@ export interface WebsiteScan {
   booking_method?: string;
   detected_problem?: string;
   hook_text?: string;
+  reused_from?: string;
   scanned_at?: string;
 }
 

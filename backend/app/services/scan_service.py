@@ -356,12 +356,56 @@ async def scan_website(lead: "Lead", db: AsyncSession) -> Optional["WebsiteScan"
     2. Gather web intelligence (news search, reviews, social links)
     3. Analyze everything with Claude — pain points, growth signals, urgency
     4. Save enriched WebsiteScan to DB.
+    If another lead with the same website was already scanned, reuse that scan
+    instead of making duplicate API calls.
     """
+    from app.models.lead import Lead as LeadModel
     from app.models.website_scan import WebsiteScan
+    from sqlalchemy import select
 
     if not lead.website:
         logger.warning("[SCAN] Lead %s has no website — skipping scan", lead.email)
         return None
+
+    normalised = _normalise_url(lead.website)
+
+    # Check for an existing scan on another lead with the same website
+    existing_result = await db.execute(
+        select(WebsiteScan)
+        .join(LeadModel, WebsiteScan.lead_id == LeadModel.id)
+        .where(LeadModel.website == normalised, LeadModel.id != lead.id)
+        .order_by(WebsiteScan.scanned_at.desc())
+        .limit(1)
+    )
+    existing = existing_result.scalar_one_or_none()
+    if existing:
+        ws_copy = WebsiteScan(
+            id=str(uuid.uuid4()),
+            lead_id=lead.id,
+            business_type=existing.business_type,
+            services_list=existing.services_list,
+            has_pricing_page=existing.has_pricing_page,
+            has_booking_system=existing.has_booking_system,
+            has_contact_form=existing.has_contact_form,
+            cta_strength=existing.cta_strength,
+            lead_capture_forms=existing.lead_capture_forms,
+            design_quality=existing.design_quality,
+            booking_method=existing.booking_method,
+            detected_problem=existing.detected_problem,
+            hook_text=existing.hook_text,
+            pain_points=existing.pain_points,
+            growth_signals=existing.growth_signals,
+            trust_signals=existing.trust_signals,
+            social_links=existing.social_links,
+            urgency_level=existing.urgency_level,
+            connection_angle=existing.connection_angle,
+            reused_from=normalised,
+            scanned_at=datetime.now(timezone.utc),
+        )
+        db.add(ws_copy)
+        await db.flush()
+        logger.info("[SCAN] Reused existing scan for %s (lead %s)", normalised, lead.email)
+        return ws_copy
 
     pages_text, homepage_html = await fetch_pages(lead.website)
     if not pages_text:

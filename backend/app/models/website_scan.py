@@ -35,6 +35,7 @@ class WebsiteScan(Base):
     social_links: Mapped[Optional[str]] = mapped_column(Text, nullable=True)      # JSON dict {platform: url}
     urgency_level: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)  # low / medium / high
     connection_angle: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # best personalized hook
+    reused_from: Mapped[Optional[str]] = mapped_column(Text, nullable=True)       # set when scan was copied from another lead with same website
     scanned_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

@@ -77,6 +77,7 @@ class WebsiteScanResponse(BaseModel):
     booking_method: Optional[str] = None
     detected_problem: Optional[str] = None
     hook_text: Optional[str] = None
+    reused_from: Optional[str] = None
     scanned_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
