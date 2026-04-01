@@ -9,13 +9,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.auth import get_current_user
 from app.core.config import settings
 from app.core.database import get_db
-from app.jobs.scheduler import job_score_new_leads, job_send_daily_outreach, job_send_followups
+from app.jobs.scheduler import job_process_all_leads, job_score_new_leads, job_send_daily_outreach, job_send_followups
 from app.models.email_log import EmailLog
 from app.models.lead import Lead
 from app.services.conversation_service import classify_intent
 from app.services.reply_handler import handle_reply
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+
+
+@router.post("/process")
+async def trigger_process(_=Depends(get_current_user)):
+    processed = await job_process_all_leads()
+    return {"ok": True, "job": "process_all_leads", "processed": processed}
 
 
 @router.post("/score")

@@ -231,6 +231,9 @@ export const replyToConversation = (id: string, body: string) =>
   });
 
 // ── Jobs ───────────────────────────────────────────────────────────────────────
+export const triggerProcessJob = () =>
+  apiFetch<{ ok: boolean; job: string; processed: number }>("/jobs/process", { method: "POST" });
+
 export const triggerScoreJob = () =>
   apiFetch<{ ok: boolean; job: string }>("/jobs/score", { method: "POST" });
 

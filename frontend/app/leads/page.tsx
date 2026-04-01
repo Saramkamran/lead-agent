@@ -11,6 +11,7 @@ import {
   updateLead,
   deleteLead,
   importLeads,
+  triggerProcessJob,
   triggerScoreJob,
   getOutreachAccounts,
   autoAssignAccounts,
@@ -60,6 +61,8 @@ export default function LeadsPage() {
 
   const [scoring, setScoring] = useState(false);
   const [scoredCount, setScoredCount] = useState<number | null>(null);
+  const [processing, setProcessing] = useState(false);
+  const [processedCount, setProcessedCount] = useState<number | null>(null);
 
   const [autoAssigning, setAutoAssigning] = useState(false);
   const [autoAssignResult, setAutoAssignResult] = useState<string | null>(null);
@@ -169,6 +172,21 @@ export default function LeadsPage() {
     setDragOver(false);
     const file = e.dataTransfer.files[0];
     if (file?.name.endsWith(".csv")) setImportFile(file);
+  }
+
+  async function handleProcessNow() {
+    setProcessing(true);
+    setProcessedCount(null);
+    try {
+      const res = await triggerProcessJob();
+      setProcessedCount(res.processed);
+      fetchLeads();
+      setTimeout(() => setProcessedCount(null), 4000);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setProcessing(false);
+    }
   }
 
   async function handleScoreNow() {
@@ -283,6 +301,9 @@ export default function LeadsPage() {
         <div className="flex items-center justify-between mb-6">
           <h1 className="text-2xl font-bold text-gray-900">Leads</h1>
           <div className="flex items-center gap-2 flex-wrap justify-end">
+            {processedCount !== null && (
+              <span className="text-sm text-green-600 font-medium">Processing complete — {processedCount} lead(s) updated</span>
+            )}
             {scoredCount !== null && (
               <span className="text-sm text-green-600 font-medium">Scoring complete — leads updated</span>
             )}
@@ -294,6 +315,10 @@ export default function LeadsPage() {
             <Button variant="secondary" onClick={handleAutoAssign} disabled={autoAssigning}>
               <UserPlus size={16} />
               {autoAssigning ? "Assigning…" : "Auto-Assign Accounts"}
+            </Button>
+            <Button variant="secondary" onClick={handleProcessNow} disabled={processing}>
+              <Play size={16} />
+              {processing ? "Processing…" : "Process Now"}
             </Button>
             <Button variant="secondary" onClick={handleScoreNow} disabled={scoring}>
               <Zap size={16} />

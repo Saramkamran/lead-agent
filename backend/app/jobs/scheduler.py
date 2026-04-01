@@ -121,6 +121,54 @@ async def job_score_new_leads() -> None:
         logger.info("[SCORE JOB] Scored %d lead(s) at %s", scored, datetime.now(timezone.utc).isoformat())
 
 
+async def job_process_all_leads() -> int:
+    """Run full pipeline (scan → score → offer → messages) for all imported leads."""
+    from app.services.scan_service import scan_website
+    from app.services.message_service import generate_messages
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(Lead).where(Lead.status == "imported")
+        )
+        leads = list(result.scalars().all())
+
+        if not leads:
+            logger.info("[PROCESS JOB] No imported leads to process")
+            return 0
+
+        processed = 0
+        for lead in leads:
+            try:
+                # Step 1: Scan (only if not already done)
+                if lead.website and lead.scan_status in ("pending", "failed", None):
+                    lead.scan_status = "scanning"
+                    await db.flush()
+                    ws = await scan_website(lead, db)
+                    lead.scan_status = "success" if ws else "failed"
+
+                # Step 2: Score + offer (only if not already scored)
+                if lead.score is None:
+                    score, reason = await score_lead(lead, db=db)
+                    lead.score = score
+                    lead.score_reason = reason
+                    offer = await generate_offer(lead, db)
+                    lead.custom_offer = offer
+
+                lead.status = "scored"
+
+                # Step 3: Generate messages (skips if already exist)
+                await generate_messages(lead=lead, db=db)
+
+                await db.commit()
+                processed += 1
+            except Exception as e:
+                logger.error("[PROCESS JOB] Error processing lead %s: %s", lead.email, e)
+                await db.rollback()
+
+        logger.info("[PROCESS JOB] Processed %d lead(s)", processed)
+        return processed
+
+
 def _get_account_smtp_kwargs(account: OutreachAccount | None) -> dict:
     """Build smtp kwargs for send_email from an OutreachAccount (decrypting the password)."""
     if account is None:
