@@ -62,7 +62,7 @@ export default function LeadsPage() {
 
   const [scoring, setScoring] = useState(false);
   const [scoredCount, setScoredCount] = useState<number | null>(null);
-  const [processing, setProcessing] = useState(false);
+  const [processingAll, setProcessingAll] = useState(false);
   const [processedCount, setProcessedCount] = useState<number | null>(null);
 
   const [autoAssigning, setAutoAssigning] = useState(false);
@@ -176,7 +176,7 @@ export default function LeadsPage() {
   }
 
   async function handleProcessNow() {
-    setProcessing(true);
+    setProcessingAll(true);
     setProcessedCount(null);
     try {
       const res = await triggerProcessJob();
@@ -186,7 +186,7 @@ export default function LeadsPage() {
     } catch (e) {
       console.error(e);
     } finally {
-      setProcessing(false);
+      setProcessingAll(false);
     }
   }
 
@@ -317,9 +317,9 @@ export default function LeadsPage() {
               <UserPlus size={16} />
               {autoAssigning ? "Assigning…" : "Auto-Assign Accounts"}
             </Button>
-            <Button variant="secondary" onClick={handleProcessNow} disabled={processing}>
+            <Button variant="secondary" onClick={handleProcessNow} disabled={processingAll}>
               <Play size={16} />
-              {processing ? "Processing…" : "Process Now"}
+              {processingAll ? "Processing…" : "Process Now"}
             </Button>
             <Button variant="secondary" onClick={handleScoreNow} disabled={scoring}>
               <Zap size={16} />
