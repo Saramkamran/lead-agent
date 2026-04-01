@@ -13,6 +13,9 @@ import {
   importLeads,
   triggerProcessJob,
   triggerScoreJob,
+  bulkDeleteLeads,
+  bulkScoreLeads,
+  bulkProcessLeads,
   getOutreachAccounts,
   autoAssignAccounts,
   Lead,
@@ -26,7 +29,7 @@ import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { Badge, ScoreBadge, StatusBadge } from "@/components/ui/badge";
-import { Upload, X, Trash2, Zap, UserPlus, RefreshCw, Play } from "lucide-react";
+import { Upload, X, Trash2, Zap, UserPlus, RefreshCw, Play, ChevronDown } from "lucide-react";
 
 const STATUS_OPTIONS = [
   "", "imported", "scored", "contacted", "follow_up_1", "follow_up_2", "follow_up_3",
@@ -48,7 +51,13 @@ export default function LeadsPage() {
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
+  const [scoreOp, setScoreOp] = useState<"" | "gt" | "lt">("");
+  const [scoreVal, setScoreVal] = useState("");
   const [loading, setLoading] = useState(true);
+
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkLoading, setBulkLoading] = useState(false);
+  const [bulkResult, setBulkResult] = useState<string | null>(null);
 
   const [accounts, setAccounts] = useState<OutreachAccount[]>([]);
 
@@ -79,9 +88,13 @@ export default function LeadsPage() {
 
   const fetchLeads = useCallback(async () => {
     setLoading(true);
+    setSelectedIds(new Set());
     try {
       const params: Parameters<typeof getLeads>[0] = { page, page_size: PAGE_SIZE };
       if (statusFilter) params.status = statusFilter;
+      const numVal = parseInt(scoreVal);
+      if (scoreOp === "gt" && !isNaN(numVal)) params.min_score = numVal;
+      if (scoreOp === "lt" && !isNaN(numVal)) params.max_score = numVal;
       const data = await getLeads(params);
       setLeads(data.items);
       setTotal(data.total);
@@ -90,7 +103,7 @@ export default function LeadsPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, statusFilter]);
+  }, [page, statusFilter, scoreOp, scoreVal]);
 
   useEffect(() => { fetchLeads(); }, [fetchLeads]);
 
@@ -224,6 +237,60 @@ export default function LeadsPage() {
     }
   }
 
+  function toggleSelectAll() {
+    if (selectedIds.size === filteredLeads.length && filteredLeads.length > 0) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(filteredLeads.map((l) => l.id!).filter(Boolean)));
+    }
+  }
+
+  function toggleSelectOne(id: string, e: React.MouseEvent) {
+    e.stopPropagation();
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+
+  async function handleBulkDelete() {
+    if (!confirm(`Delete ${selectedIds.size} lead(s)? This cannot be undone.`)) return;
+    setBulkLoading(true);
+    try {
+      const res = await bulkDeleteLeads(Array.from(selectedIds));
+      setBulkResult(`${res.deleted} lead(s) deleted`);
+      setSelectedIds(new Set());
+      fetchLeads();
+      setTimeout(() => setBulkResult(null), 4000);
+    } catch (e) { console.error(e); }
+    finally { setBulkLoading(false); }
+  }
+
+  async function handleBulkScore() {
+    setBulkLoading(true);
+    try {
+      const res = await bulkScoreLeads(Array.from(selectedIds));
+      setBulkResult(`${res.scored} lead(s) scored`);
+      setSelectedIds(new Set());
+      fetchLeads();
+      setTimeout(() => setBulkResult(null), 4000);
+    } catch (e) { console.error(e); }
+    finally { setBulkLoading(false); }
+  }
+
+  async function handleBulkProcess() {
+    setBulkLoading(true);
+    try {
+      const res = await bulkProcessLeads(Array.from(selectedIds));
+      setBulkResult(`${res.processed} lead(s) processed`);
+      setSelectedIds(new Set());
+      fetchLeads();
+      setTimeout(() => setBulkResult(null), 4000);
+    } catch (e) { console.error(e); }
+    finally { setBulkLoading(false); }
+  }
+
   async function handleRescan() {
     if (!selectedLead) return;
     setScanLoading(true);
@@ -332,7 +399,7 @@ export default function LeadsPage() {
         </div>
 
         {/* Filters */}
-        <div className="flex gap-3 mb-4">
+        <div className="flex gap-3 mb-4 flex-wrap items-center">
           <Input
             placeholder="Search name, company, email…"
             value={search}
@@ -349,13 +416,68 @@ export default function LeadsPage() {
               <option key={s} value={s}>{s.replace(/_/g, " ")}</option>
             ))}
           </Select>
+          <Select
+            value={scoreOp}
+            onChange={(e) => { setScoreOp(e.target.value as "" | "gt" | "lt"); setPage(1); }}
+            className="w-[130px]"
+          >
+            <option value="">Score filter</option>
+            <option value="gt">Score &gt;</option>
+            <option value="lt">Score &lt;</option>
+          </Select>
+          {scoreOp && (
+            <Input
+              type="number"
+              placeholder="Value"
+              value={scoreVal}
+              onChange={(e) => { setScoreVal(e.target.value); setPage(1); }}
+              className="w-24"
+            />
+          )}
+          {scoreOp && (
+            <button
+              onClick={() => { setScoreOp(""); setScoreVal(""); setPage(1); }}
+              className="text-xs text-gray-400 hover:text-gray-600"
+            >
+              Clear
+            </button>
+          )}
         </div>
+
+        {/* Bulk actions toolbar */}
+        {selectedIds.size > 0 && (
+          <div className="flex items-center gap-3 mb-3 px-4 py-2 bg-indigo-50 border border-indigo-200 rounded-lg">
+            <span className="text-sm font-medium text-indigo-700">{selectedIds.size} selected</span>
+            {bulkResult && <span className="text-sm text-green-600 font-medium">{bulkResult}</span>}
+            <div className="flex gap-2 ml-auto">
+              <Button variant="secondary" size="sm" onClick={handleBulkScore} disabled={bulkLoading}>
+                <Zap size={14} /> Score
+              </Button>
+              <Button variant="secondary" size="sm" onClick={handleBulkProcess} disabled={bulkLoading}>
+                <Play size={14} /> Process
+              </Button>
+              <Button variant="secondary" size="sm" onClick={handleBulkDelete} disabled={bulkLoading}
+                className="text-red-600 hover:text-red-700">
+                <Trash2 size={14} /> Delete
+              </Button>
+            </div>
+          </div>
+        )}
 
         {/* Table */}
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-gray-100 bg-gray-50 text-left">
+                <th className="px-4 py-3 w-10">
+                  <input
+                    type="checkbox"
+                    className="rounded border-gray-300 cursor-pointer"
+                    checked={filteredLeads.length > 0 && selectedIds.size === filteredLeads.length}
+                    ref={(el) => { if (el) el.indeterminate = selectedIds.size > 0 && selectedIds.size < filteredLeads.length; }}
+                    onChange={toggleSelectAll}
+                  />
+                </th>
                 <th className="px-4 py-3 font-medium text-gray-600">Name</th>
                 <th className="px-4 py-3 font-medium text-gray-600">Email</th>
                 <th className="px-4 py-3 font-medium text-gray-600">Company</th>
@@ -369,16 +491,24 @@ export default function LeadsPage() {
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={9} className="px-4 py-8 text-center text-gray-400">Loading…</td></tr>
+                <tr><td colSpan={10} className="px-4 py-8 text-center text-gray-400">Loading…</td></tr>
               ) : filteredLeads.length === 0 ? (
-                <tr><td colSpan={9} className="px-4 py-8 text-center text-gray-400">No leads found.</td></tr>
+                <tr><td colSpan={10} className="px-4 py-8 text-center text-gray-400">No leads found.</td></tr>
               ) : (
                 filteredLeads.map((lead) => (
                   <tr
                     key={lead.id}
-                    className="border-b border-gray-50 hover:bg-indigo-50/40 cursor-pointer transition-colors"
+                    className={`border-b border-gray-50 hover:bg-indigo-50/40 cursor-pointer transition-colors ${selectedIds.has(lead.id!) ? "bg-indigo-50" : ""}`}
                     onClick={() => openLead(lead.id!)}
                   >
+                    <td className="px-4 py-3" onClick={(e) => toggleSelectOne(lead.id!, e)}>
+                      <input
+                        type="checkbox"
+                        className="rounded border-gray-300 cursor-pointer"
+                        checked={selectedIds.has(lead.id!)}
+                        onChange={() => {}}
+                      />
+                    </td>
                     <td className="px-4 py-3 font-medium text-gray-900">
                       {[lead.first_name, lead.last_name].filter(Boolean).join(" ") || lead.email}
                     </td>

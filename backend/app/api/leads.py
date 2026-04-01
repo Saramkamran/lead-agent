@@ -5,6 +5,7 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from pydantic import BaseModel
 from openai import AsyncOpenAI
 from sqlalchemy import delete as sql_delete
 from sqlalchemy import func, select, update
@@ -226,6 +227,7 @@ async def list_leads(
     page_size: int = Query(20, ge=1, le=100),
     status: Optional[str] = Query(None),
     min_score: Optional[int] = Query(None),
+    max_score: Optional[int] = Query(None),
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
@@ -234,6 +236,8 @@ async def list_leads(
         query = query.where(Lead.status == status)
     if min_score is not None:
         query = query.where(Lead.score >= min_score)
+    if max_score is not None:
+        query = query.where(Lead.score <= max_score)
 
     count_result = await db.execute(select(func.count()).select_from(query.subquery()))
     total = count_result.scalar_one()
@@ -319,6 +323,89 @@ async def delete_lead(
         )
     await db.delete(lead)
     await db.flush()
+
+
+class BulkIdsRequest(BaseModel):
+    ids: list[str]
+
+
+@router.post("/bulk-delete", status_code=status.HTTP_200_OK)
+async def bulk_delete_leads(
+    body: BulkIdsRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    result = await db.execute(select(Lead).where(Lead.id.in_(body.ids)))
+    leads = result.scalars().all()
+    for lead in leads:
+        await db.delete(lead)
+    await db.commit()
+    return {"deleted": len(leads)}
+
+
+@router.post("/bulk-score", status_code=status.HTTP_200_OK)
+async def bulk_score_leads(
+    body: BulkIdsRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    from app.services.scoring_service import score_lead
+    from app.services.offer_service import generate_offer
+
+    result = await db.execute(select(Lead).where(Lead.id.in_(body.ids)))
+    leads = result.scalars().all()
+    scored = 0
+    for lead in leads:
+        try:
+            s, reason = await score_lead(lead, db=db)
+            lead.score = s
+            lead.score_reason = reason
+            offer = await generate_offer(lead, db)
+            lead.custom_offer = offer
+            if lead.status == "imported":
+                lead.status = "scored"
+            scored += 1
+        except Exception as e:
+            logger.warning("Bulk score failed for lead %s: %s", lead.id, e)
+    await db.commit()
+    return {"scored": scored}
+
+
+@router.post("/bulk-process", status_code=status.HTTP_200_OK)
+async def bulk_process_leads(
+    body: BulkIdsRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    from app.services.scan_service import scan_website
+    from app.services.scoring_service import score_lead
+    from app.services.offer_service import generate_offer
+    from app.services.message_service import generate_messages
+
+    result = await db.execute(select(Lead).where(Lead.id.in_(body.ids)))
+    leads = result.scalars().all()
+    processed = 0
+    for lead in leads:
+        try:
+            if lead.website and lead.scan_status in ("pending", "failed", None):
+                lead.scan_status = "scanning"
+                await db.flush()
+                ws = await scan_website(lead, db)
+                lead.scan_status = "success" if ws else "failed"
+            if lead.score is None:
+                s, reason = await score_lead(lead, db=db)
+                lead.score = s
+                lead.score_reason = reason
+                offer = await generate_offer(lead, db)
+                lead.custom_offer = offer
+            lead.status = "scored"
+            await generate_messages(lead=lead, db=db)
+            await db.commit()
+            processed += 1
+        except Exception as e:
+            logger.warning("Bulk process failed for lead %s: %s", lead.id, e)
+            await db.rollback()
+    return {"processed": processed}
 
 
 @router.delete("/{lead_id}/messages", status_code=status.HTTP_204_NO_CONTENT)

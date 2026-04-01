@@ -140,14 +140,24 @@ export interface PaginatedLeads {
   page_size: number;
 }
 
-export const getLeads = (params?: { page?: number; page_size?: number; status?: string; min_score?: number }) => {
+export const getLeads = (params?: { page?: number; page_size?: number; status?: string; min_score?: number; max_score?: number }) => {
   const qs = new URLSearchParams();
   if (params?.page) qs.set("page", String(params.page));
   if (params?.page_size) qs.set("page_size", String(params.page_size));
   if (params?.status) qs.set("status", params.status);
   if (params?.min_score !== undefined) qs.set("min_score", String(params.min_score));
+  if (params?.max_score !== undefined) qs.set("max_score", String(params.max_score));
   return apiFetch<PaginatedLeads>(`/leads?${qs}`);
 };
+
+export const bulkDeleteLeads = (ids: string[]) =>
+  apiFetch<{ deleted: number }>("/leads/bulk-delete", { method: "POST", body: JSON.stringify({ ids }) });
+
+export const bulkScoreLeads = (ids: string[]) =>
+  apiFetch<{ scored: number }>("/leads/bulk-score", { method: "POST", body: JSON.stringify({ ids }) });
+
+export const bulkProcessLeads = (ids: string[]) =>
+  apiFetch<{ processed: number }>("/leads/bulk-process", { method: "POST", body: JSON.stringify({ ids }) });
 
 export const getLead = (id: string) => apiFetch<Lead>(`/leads/${id}`);
 
